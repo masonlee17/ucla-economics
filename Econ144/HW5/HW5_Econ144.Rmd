@@ -1,0 +1,154 @@
+---
+title: "HW5 Econ 144"
+author: "Mason Lee"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+```{r packages}
+library(readr)
+library(lattice)
+library(foreign)
+library(MASS)
+library(car)
+require(stats)
+require(stats4)
+library(KernSmooth)
+library(fastICA)
+library(cluster)
+library(leaps)
+library(mgcv)
+library(rpart)
+library(pan)
+library(mgcv)
+library(DAAG)
+library("TTR")
+library(tis)
+require("datasets")
+require(graphics)
+library(forecast)
+require(astsa)
+library(RColorBrewer)
+library(plotrix)
+library(tsibble)
+library(tseries)
+library(ggplot2)
+library(tidyr)
+library(USgas)
+library(fpp3)
+```
+
+
+# Chapter 12
+
+## 12.3
+
+```{r 123}
+data123 <- read_csv("data123.csv")
+
+us <- ts(data123$CPI_US, start=c(1999,1), frequency=12)
+gr <- ts(data123$CPI_Germany, start=c(1999,1), frequency=12)
+ex <- ts(data123$EX_dollar_euro, start=c(1999,1), frequency=12)
+
+gr_usd <- gr * ex
+diff_ppp <- us - gr_usd
+
+adf.test(diff_ppp)
+adf.test(us)
+adf.test(gr_usd)
+
+```
+The high p values in the above tests prove that we can reject the null hypothesis, and that all three relationships are non-stationary. This means that the two series are not cointegrated and that PPP does not hold.
+
+## 12.4
+
+```{r 124}
+data124 <- read_csv("data124.csv")
+
+cpi <- ts(data124$cpi, start=c(1957,1), frequency=12)
+i <- ts(data124$nominal, start=c(1957,1), frequency=12)
+
+pi <- diff(log(cpi)) * 100
+rt <- window(i, start=start(pi)) - pi
+
+adf.test(pi)
+adf.test(i)
+adf.test(rt)
+
+
+```
+
+Due to the high p values in the above three adf tests, inflation, normal rate, and real rate are all non stationary. This means that he Fisher relationship does not produce a stationary real rate. Overall, we do not have strong evidence that the Fisher equation will hold here.
+
+## 12.5
+
+```{r 125}
+data125 <- read_csv("data125.csv")
+
+data125 <- data125[complete.cases(data125), ]
+
+short <- ts(data125$TB3Month, start=c(1954,4), frequency=12)
+long <- ts(data125$TB10Year, start=c(1954,4), frequency=12)
+
+adf.test(short)
+adf.test(long)
+
+spread <- long - short
+adf.test(spread)
+
+adf.test(long - short)
+
+```
+
+The short and long rates are both non stationary (high p values), but the spreads have very low p values, meaning we can reject the null hypothesis. This means the short and long rates are cointegrated despite neither rates being stationary.
+
+## 12.6 
+
+```{r 126}
+fit_short <- auto.arima(short)
+fit_long <- auto.arima(long)
+
+a <- forecast(fit_short, h=6)
+b <- forecast(fit_long, h=6)
+
+plot(a)
+plot(b)
+
+a
+b
+```
+
+
+## 12.7
+
+```{r 127}
+data127 <- read_csv("data127.csv")
+data127 <- data127[complete.cases(data127), ]
+
+la <- ts(data127$ILA, start=c(1975,1), frequency=4)
+riv <- ts(data127$IRV, start=c(1975,1), frequency=4)
+
+adf.test(la - riv)
+
+fit_la <- auto.arima(la)
+fit_riv <- auto.arima(riv)
+
+c <- forecast(fit_la, h=3)
+d <- forecast(fit_riv, h=3)
+
+plot(c)
+plot(d)
+
+c
+d
+```
+
+The p value fromn the adf test is 0.0778, which is close to stationary but not quite low enough to reject the null hypothesis (0.05). If this is the only test we can use, then we would say that LA and Riverside home prices are not stationary, but more exploration is needed to say for certain what is happening between these two datasets. There is a possible cointegrated relationship.
+
+

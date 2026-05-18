@@ -1,0 +1,281 @@
+---
+title: "Econ 104 Project"
+author: "Mason Lee, Ian Bowen"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+```{r Packages}
+library(tidyverse)
+library(ggplot2)
+library(MASS)
+library(dplyr)
+library(corrplot)
+```
+
+# Section 1
+
+## Data
+
+```{r Data}
+all_car_adverts <- read_csv("all_car_adverts.csv")
+
+car_data <- all_car_adverts[c(5, 12, 14, 17, 19, 23)]
+
+car_data$year <- as.numeric(car_data$year)
+
+car_data <- car_data %>%
+  filter(car_price < 150000 & car_price > 0)
+
+car_data <- na.omit(car_data)
+
+```
+
+### Variables
+
+The modified car dataset has 6 variables: car_price, car_seller_rating, year, miles, engine_size, and num_owner. We will using the seller rating, car mileage, size of engine and number of previous owners to predict the year the car was built and how much the car is offered for. Year and Price should be correllated, which will help with our future VAR model fit, and the four explanatory variables account for much of the variance in the predictors.
+
+
+## Question 1: Analysis of Variables
+
+### Histograms
+
+
+```{r Price Histogram}
+fit_lognorm <- fitdistr(car_data$car_price, "lognormal")
+
+
+ggplot(data = car_data, aes(x = car_price)) +
+  geom_histogram(aes(y = ..density..), binwidth = 1000, fill = "darkblue", alpha = 0.5) +
+  stat_function(fun = dlnorm, args = list(meanlog = fit_lognorm$estimate["meanlog"], sdlog = fit_lognorm$estimate["sdlog"]), color = "brown", size = 1.2)
+```
+The Price variable is a right-skewed variable. There were outliers that were taken our in the Data section of the project. The Price Variable seems best approximated by a Log Normal Distribution (Brown Line). The data fits well, which is usually a good indicator of accuracy for predictors. 
+
+```{r Year Histogram}
+fit_lognorm <- fitdistr(car_data$year, "lognormal")
+
+
+ggplot(data = car_data, aes(x = year)) +
+  geom_histogram(aes(y = ..density..), binwidth = 1, fill = "blue", alpha = 0.5) +
+  stat_function(fun = dlnorm, args = list(meanlog = fit_lognorm$estimate["meanlog"], sdlog = fit_lognorm$estimate["sdlog"]), color = "brown", size = 1.2)
+
+```
+The year variable is very left skewed. This variable is mostly approximated by a Log Normal curve. The peak isn't well represented, but the curve does a good job of capturing the rise in the year values. Most of the used cars for sale are from 2019, hence the peak, but aside from that the Log Normal curve fits well.
+
+
+```{r prev_owners hist}
+fit_lognorm <- fitdistr(car_data$num_owner, "lognormal")
+
+
+ggplot(data = car_data, aes(x = num_owner)) +
+  geom_histogram(aes(y = ..density..), binwidth = 1, fill = "blue", alpha = 0.5) +
+  stat_function(fun = dlnorm, args = list(meanlog = fit_lognorm$estimate["meanlog"], sdlog = fit_lognorm$estimate["sdlog"]), color = "brown", size = 1.2) 
+```
+Because the Previous Number of Owners is usually a low number (aside from outliers), it is a hard variable to provide a fitted curve for, but the closest option between the main curves (normal, log normal, gamma, exponential, poisson, ect.) was Log Normal. It accurately captures the slope downwards, and gets the shape of the peak correct, just higher than the actual data. Number of Owners being so low is also why the data is very right skewed. 
+
+```{r engine hist}
+fit_lognorm <- fitdistr(car_data$engine_size, "lognormal")
+
+
+ggplot(data = car_data, aes(x = engine_size)) +
+  geom_histogram(aes(y = ..density..), bins = 40, fill = "blue", alpha = 0.5) +
+  stat_function(fun = dlnorm, args = list(meanlog = fit_lognorm$estimate["meanlog"], sdlog = fit_lognorm$estimate["sdlog"]), color = "brown", size = 1.2)
+```
+Engine Size is a relatively centered variable, with a long tail on the right side. Aside from the unexpected peak at 110, the log normal curve represents the engine_size distribution well. The lower peaks on the right and left sides fit well around the curve, and most of the peak is very accurate. The only issue is the peak, which overexceeds the Log Normal estimation.
+
+```{r Miles Hist}
+fit_exp <- fitdistr(car_data$miles, "exponential")
+fit_lognorm <- fitdistr(car_data$miles, "lognormal")
+
+
+ggplot(data = car_data, aes(x = miles)) +
+  geom_histogram(aes(y = ..density..), binwidth = 10000, fill = "blue", alpha = 0.5) +
+  stat_function(fun = dexp, args = list(rate = fit_exp$estimate["rate"]), color = "green", size = 1.2) +
+  stat_function(fun = dlnorm, args = list(meanlog = fit_lognorm$estimate["meanlog"], sdlog = fit_lognorm$estimate["sdlog"]), color = "brown", size = 1.2) 
+```
+The Miles data closely fits the log normal curve (brown), with inaccuracies in the peak but a good sense of the tail. I also left an exponential approximation (green) due to the similarities seen everywhere on the left side. It does a better job of estimating the slope than the Log Normal, but doesn't have any relevance on the left side of the graph.
+
+```{r Rating Hist}
+fit_norm <- fitdistr(car_data$car_seller_rating, "normal")
+
+
+ggplot(data = car_data, aes(x = car_seller_rating)) +
+  geom_histogram(aes(y = ..density..), binwidth = 0.2 , fill = "blue", alpha = 0.5) +
+  stat_function(fun = dnorm, args = list(mean = mean(car_data$car_seller_rating), sd = sd(car_data$car_seller_rating)), color = "red", size = 1.2) 
+```
+Car Seller Rating is very left skewed, and like with the number of previous owners, the ratings variable is tough to approximate with a statistical curve due to the limited number of options (0-5 scale). That being said, the normal curve (red) seems to approximately capture the data closer than the other options. The upward sloping nature and long left tail fits. The peak contains a higher percentage of the data than expected. I believe this is due to human nature, where more people are likely to give a high score than random generation would expect.
+
+
+### Correlation Plot
+
+```{r Correlation Plot}
+corr_matrix <- cor(car_data)
+
+corrplot(corr_matrix, method = "color", type = "lower", addCoef.col = "limegreen", tl.col = "black", tl.cex = 0.8)
+```
+This Correlation Plot, generated with the corrplot library, provides a quick way to see how closely variables are correlated with each other. The darker the color, the more significant the correlation. 
+
+One takeaway that I noticed was the lack of correlation between seller rating and all other categories. I originally expected there to be a correlation between this variable and price (more trustworthy salesmen may be able to sell for more than their less trustworthy counterparts), but this isn't reflected in the data. From this point forward I will be omitting this variable from models. 
+
+Another thing I notes was the strong negative correlation between number of owners and year. This makes sense, given most people own cars for multiple years before selling them. The -0.7 correlation between miles and year was stronger than I expected, but makes sense as it takes time to accumulate mileage. 
+
+The Number of Owners variable having a correlation of 0 with Engine Size is great because there shouldn't be any relationship between the two varaibles. 
+
+The 0.55 correlation between Years and Price is great for the VAR test that will be run later in the project.
+
+
+
+### Boxplot
+
+Because of the large number of observations (320,000) being handled, Boxplots become a little difficult to read, but they still provide important information on the variable skew, quartiles, and density.
+
+```{r Price Boxplot}
+boxplot(car_data$car_price, main = "Price Boxplot")
+```
+The Price boxplot shows a strong right skew, with the data centered around 15,000 dollars and only about 25% above 25,000 dollars. There are many cars being sold for very cheap, but a steady number being sold for well above average, too, as shown by how solid the stream of dots above the outlier line looks.
+
+```{r Rating Boxplot}
+boxplot(car_data$car_seller_rating, main = "Seller Rating Boxplot")
+```
+This boxplot confirms the problems with the Seller Rating Variable. The average rating (out of 5) is roughly 4.6, with 75% of ratings coming in above 4.4. With data so grouped together, it is difficult to find trends and therefore useless in modeling. 
+
+
+```{r Mileage Boxplot}
+options(scipen = 999)
+boxplot(car_data$miles, main = "Mileage Boxplot")
+```
+The mileage boxplot is pretty standard. The average car has been driven somewhere around 50,000 miles, with outliers rampant but becoming less uncommon as they distances become higher. The spread is nice, too, which helps with modeling because it means that the data isn't all grouped together like with the Ratings.
+
+
+```{r Engine Boxplot}
+boxplot(car_data$engine_size, main = "Engine Size Boxplot")
+```
+This boxplot is better than I expected. Because most engines come in a series of standard sizes, I expected this boxplot to suffer the same issues as the Ratings plot, but it actually looks much more like the Mileage one. The spread between quartiles is a little smaller but still statistically significant, and the outliers trail off better than they do in the Price boxplot
+
+```{r Owners Boxplot}
+boxplot(car_data$num_owner, main = "Owner Count Boxplot")
+```
+If it weren't for the correlation graph above, I would think that this boxplot would be a horrible indicator for modeling with the Owner Count Varaible, but the very low number of outliers makes up for the low quartile spread. The average number of times a car is sold is around 2, with 25% being sold secondhand for the first time. Being sold more than 3 times is considered an outlier. There is no lower outlier line because you can't have less than one previus owner.
+
+
+```{r Year Boxplot}
+boxplot(car_data$year, main = "Year Boxplot")
+```
+The year Boxplot seems standard, with a few outleirs but most data falling between the outlier lines. Not many cars built after 2021 are being sold. The 50% of the cars being sold are from between 2019 and 2012. There is one car from around 1960 being sold, which may affect the model because usually the older a car is the less it sells for but sometimes classic cars fetch well above predicted prices. 1 observation out of 320,733 won't make a statistical difference.
+
+
+### Scatter Plots
+
+```{r Engine/Price}
+ggplot(data = car_data, aes(x = engine_size, y = car_price)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ggtitle("Engine/Price Scatter") +         
+  labs(x = "Engine Size", y = "Price")
+```
+This scatterplot shows a strong relationship between Engine Size and Price. Typically, cars built with stronger engines are either newer or considered a luxury vehicle. In either case, they become more expensive. The blue line of best fit confirms the visually positive relationship.
+
+```{r Owner/Price}
+ggplot(data = car_data, aes(x = num_owner, y = car_price)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ggtitle("Owner Count/Price Scatter") +         
+  labs(x = "Owner Count", y = "Price")
+```
+Because of the one car that had 32 previous owners, the line of best fit is not very helpful, but it does show a negative relationship between cars changing hands multiple times and the price of said car. There doesn't seem to be a super big price drop for the first 2 or 3 sales, but after that the price plummets. The car that sold 32 times sold for well below average.
+
+```{r p/m}
+ggplot(data = car_data, aes(x = miles, y = car_price)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ggtitle("Mileage/Price Scatter") +         
+  labs(x = "Mileage", y = "Price")
+```
+Both Price and Mileage are continuous variables, and there are 320,000 observations, so scatterplots become hard to read. There is a negative relationship between heavy use and resale value, but because of how many points there are, the line of best fit becomes hard to trust. 
+
+```{r Price/Mileage}
+ggplot(data = car_data, aes(x = miles, y = car_price)) +
+  geom_point(alpha = 0.01) +
+  geom_smooth(method = "lm") +
+  ggtitle("Mileage/Price Scatter (low alpha)") +         
+  labs(x = "Mileage", y = "Price")
+```
+Reducing the alpha helps show where the most points are. This second graph shows that a large majority of cars go for less than 50,000 dollars and are driven less than 100,000 miles. The line of best fit still doesn't provide much insight (can't sell a car for negative money) but the downward trend is more apparent. 
+
+
+
+```{r es/y}
+ggplot(data = car_data, aes(x = engine_size, y = year)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ggtitle("Engine Size/Year Scatter") +         
+  labs(x = "Engine Size", y = "Year")
+```
+As years go by and technology improves, larger engines have become the norm. Smaller engine cars are still being produces, but larger engines are much more common than they were 10 years ago. The upward trend confirms this. It isn't super strong, but does show that bigger engines are more likely to come from newer cars. The 1960 car is an exception, as it has a large engine, but most of the cars surviving the past 65 years were built well, so there is some survivorship bias.
+
+```{r oc/y}
+ggplot(data = car_data, aes(x = num_owner, y = year)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ggtitle("Owner Count/Year Scatter") +         
+  labs(x = "Owner Count", y = "Year")
+```
+Since it takes a while for a car to switch hands, it makes sense that the owner count has a very negative relationship with year. This will make it a helpful explanatory variable when we start modeling. 
+
+```{r m/y}
+ggplot(data = car_data, aes(x = miles, y = year)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  ggtitle("Mileage/Year Scatter") +         
+  labs(x = "Mileage", y = "Year")
+```
+For the reasons mentioned in the above mileage scatterplot, I will be showing a second version of this plot with a reduced alpha, but this graph doesn't contain any surprises. It takes more time to drive 200,000 miles than it does to drive 20,000, so the slope of the best fit line is negative. One interesting thing to note is the lack of cars that have driven 230,000+ miles. Cars tend to break down much more often when they hit this mark, so it may make sense to filter out these outliers when it becomes time to model.
+
+```{r m/y low a}
+ggplot(data = car_data, aes(x = miles, y = year)) +
+  geom_point(alpha = 0.01) +
+  geom_smooth(method = "lm") +
+  ggtitle("Mileage/Year Scatter (low alpha)") +         
+  labs(x = "Mileage", y = "Year")
+```
+Reducing the alpha shows a much tighter set of points in the upper left corner of the graph. This is where most cars fall, and as a result yields the most accurate data and has the most influence on the line of best fit.
+
+
+### 5 Number Summary
+
+```{r 5numPrice}
+fivenum(car_data$car_price)
+```
+
+This is another good way to visualize the skewed price data. The average is way closer to the minimum value (390) than to the max. It is worth noting that 149,999 isn't the highest car price in the original data, but I restricted price at 150,000 dollars to remove some of the high outliers.
+
+```{r 5numMiles}
+fivenum(car_data$miles)
+```
+
+The 2-mile car may be a lemon or from a dealership that buys directly from the manufacturer. Either way, it is an outlier that should be restricted.
+
+```{r 5numowners}
+fivenum(car_data$num_owner)
+```
+32 is an outlier, but the minimum and lower quartile being 1 and the median and upper quartile being 2 makes sense because not many cars are sold more than twice before they are either damaged or scrapped for parts
+
+```{r 5numyear}
+fivenum(car_data$year)
+```
+
+Most of the second hand cars on the market are between 6 and 11 years old, with a few cars being sold that are only three years old (would probably influence the price negatively), and some cars antique cars also on the market.
+
+```{r 5numengine}
+fivenum(car_data$engine_size)
+```
+
+Not much new information here. If there are outliers that need restricting, the boxplots and scatterplots already covered them. This variable has less of a skew than the others in the dataset.
+
+## Question 2: TSDisplay

@@ -1,0 +1,232 @@
+---
+title: "Econ 103: Project 1"
+author: "Mason Lee, Alexander Prater, Fahad Malik, Kalani Leibow"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+
+## Packages
+
+```{r}
+#install.packages("Lahman")
+library(Lahman)
+library(tidyverse)
+library(ggplot2)
+library(car)
+
+```
+
+
+## Data Loading
+
+```{r}
+data(Batting)
+head(Batting)
+```
+
+## Data Manipulation
+
+```{r}
+BattingData <- Batting
+
+BattingData <- BattingData %>%
+  filter(yearID >= 1985, AB >= 100, IBB > 0, HR > 0, SO > 0, RBI > 0) %>%
+  mutate(BA = H / AB, Singles = (H - X2B - X3B - HR), 
+    SLG = ((H - X2B - X3B - HR) + 2 * X2B + 3 * X3B + 4 * HR) / AB,
+         OBP = (H + BB + HBP) / (AB + BB + SF + HBP)) %>%
+  mutate(OPS = SLG + OBP)
+
+BattingDataSlim <- BattingData[c(1, 2, 5, 12, 13, 17, 18, 25)]
+
+head(BattingDataSlim)
+
+```
+
+## Graphs of 4 Predictors (Question 2)
+
+### 5 Number Summary
+
+```{r}
+fivenum(BattingDataSlim$HR)
+fivenum(BattingDataSlim$RBI)
+fivenum(BattingDataSlim$SLG)
+fivenum(BattingDataSlim$SO)
+fivenum(BattingDataSlim$IBB)
+```
+
+
+### Histograms
+
+```{r}
+hist(BattingDataSlim$HR, breaks = "scott")
+hist(BattingDataSlim$RBI, breaks = "scott")
+hist(BattingDataSlim$SLG, breaks = "scott")
+hist(BattingDataSlim$SO, breaks = "scott")
+hist(BattingDataSlim$IBB, breaks = "scott")
+
+```
+### Boxplots
+
+```{r}
+boxplot(BattingDataSlim$HR)
+boxplot(BattingDataSlim$RBI)
+boxplot(BattingDataSlim$SLG)
+boxplot(BattingDataSlim$SO)
+boxplot(BattingDataSlim$IBB)
+
+
+```
+
+
+### QQ Plots
+
+```{r}
+qqplot(BattingDataSlim$HR, BattingDataSlim$IBB)
+qqplot(BattingDataSlim$RBI, BattingDataSlim$IBB)
+qqplot(BattingDataSlim$SLG, BattingDataSlim$IBB)
+qqplot(BattingDataSlim$SO, BattingDataSlim$IBB)
+```
+
+### Scatter Plots with Regression Lines (Question 3)
+
+```{r}
+
+ggplot(BattingDataSlim, aes(x = HR, y = IBB)) +
+  geom_point() + 
+  geom_jitter() 
+
+
+ggplot(BattingDataSlim, aes(x = SLG, y = IBB)) +
+  geom_point()
+
+ggplot(BattingDataSlim, aes(x = SO, y = IBB)) +
+  geom_point()
+
+ggplot(BattingDataSlim, aes(x = RBI, y = IBB)) +
+  geom_point() 
+
+
+```
+
+## Checking for Transformations (Question 4)
+
+```{r}
+summary(lm(BattingDataSlim$IBB ~ (BattingDataSlim$HR))) #R^2 0.2063
+summary(lm(BattingDataSlim$IBB ~ exp(BattingDataSlim$HR))) #R^2 0.005221
+summary(lm(BattingDataSlim$IBB ~ sqrt(BattingDataSlim$HR))) #R^2 0.1718
+summary(lm(BattingDataSlim$IBB ~ log(BattingDataSlim$HR))) #R^2 0.1238
+```
+
+```{r}
+summary(lm(BattingDataSlim$IBB ~ (BattingDataSlim$RBI))) #R^2 0.2305
+summary(lm(BattingDataSlim$IBB ~ exp(BattingDataSlim$RBI))) #R^2 5.118e-05 
+summary(lm(BattingDataSlim$IBB ~ sqrt(BattingDataSlim$RBI))) #R^2 0.2057
+summary(lm(BattingDataSlim$IBB ~ log(BattingDataSlim$RBI))) #R^2 0.1707
+```
+
+```{r}
+summary(lm(BattingDataSlim$IBB ~ (BattingDataSlim$SLG))) #R^2 0.1487
+summary(lm(BattingDataSlim$IBB ~ exp(BattingDataSlim$SLG))) #R^2 0.1601
+summary(lm(BattingDataSlim$IBB ~ sqrt(BattingDataSlim$SLG))) #R^2 0.1365
+summary(lm(BattingDataSlim$IBB ~ log(BattingDataSlim$SLG))) #R^2 0.1244
+```
+
+```{r}
+summary(lm(BattingDataSlim$IBB ~ (BattingDataSlim$SO))) #R^2 0.04826
+summary(lm(BattingDataSlim$IBB ~ exp(BattingDataSlim$SO))) #R^2 -8.603e-05 
+summary(lm(BattingDataSlim$IBB ~ sqrt(BattingDataSlim$SO))) #R^2 0.05132 
+summary(lm(BattingDataSlim$IBB ~ log(BattingDataSlim$SO))) #R^2 0.05137 
+```
+
+```{r}
+densityPlot(BattingDataSlim$HR) #best R^2, will use this for the Transformation
+densityPlot(sqrt(BattingDataSlim$HR)) #best visually
+densityPlot(log(BattingDataSlim$HR))
+densityPlot(exp(BattingDataSlim$HR))
+
+densityPlot(BattingDataSlim$SO) #best visually
+densityPlot(sqrt(BattingDataSlim$SO)) #best R^2, will use this for the Transformation
+densityPlot(log(BattingDataSlim$SO))
+densityPlot(exp(BattingDataSlim$SO))
+
+densityPlot(BattingDataSlim$SLG) #best visually
+densityPlot(sqrt(BattingDataSlim$SLG)) 
+densityPlot(log(BattingDataSlim$SLG))
+densityPlot(exp(BattingDataSlim$SLG)) #best R^2, will use this for the Transformation
+
+densityPlot(BattingDataSlim$RBI) #best visually, best R^2, will use this for the Transformation
+densityPlot(sqrt(BattingDataSlim$RBI)) 
+densityPlot(log(BattingDataSlim$RBI))
+densityPlot(exp(BattingDataSlim$RBI))
+```
+
+## Post-Transformation Linear Models (Question 6)
+
+```{r}
+model1 <- lm(BattingDataSlim$IBB ~ (BattingDataSlim$HR))
+model2 <- lm(BattingDataSlim$IBB ~ sqrt(BattingDataSlim$SO))
+model3 <- lm(BattingDataSlim$IBB ~ exp(BattingDataSlim$SLG))
+model4 <- lm(BattingDataSlim$IBB ~ (BattingDataSlim$RBI))
+
+
+summary(model1)
+summary(model2)
+summary(model3)
+summary(model4)
+
+confint(model1)
+confint(model2)
+confint(model3)
+confint(model4)
+
+```
+
+## Bootstrapping (Question 7)
+
+```{r}
+
+model4boot <- Boot(model4, R=1000)
+
+summary(model4boot)
+confint(model4boot)
+hist(model4boot)
+
+```
+
+
+```{r}
+regression_model <- parsnip::linear_reg() %>%
+  parsnip::set_engine("lm") %>%
+  parsnip::set_mode("regression")
+
+fit <- regression_model %>%
+  parsnip::fit(data = BattingDataSlim, IBB ~ RBI)
+
+summary(fit$fit)
+```
+
+```{r}
+resid <- broom::augment(fit, BattingDataSlim)
+
+ggplot(data = resid, aes(x = .pred, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, color = "red")
+
+```
+
+```{r}
+qqnorm(residuals(model4))
+qqline(residuals(model4), lwd = 1)
+```
+
+
+# Analysis of Code
+
+#### The following section answers each of the questions explicitly, while also providing commentary on the important graphs

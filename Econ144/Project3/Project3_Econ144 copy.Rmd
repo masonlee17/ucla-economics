@@ -1,0 +1,627 @@
+---
+title: "Project 3 - Econ 144"
+author: "Mason Lee and Eli Motzkin"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+# Introduction
+
+For this project, we will be looking at FRED's DJFUELUSGULF.csv dataset, which tracks daily prices of Kerosene-Type Jet Fuel (USD per barrel) in the Gulf Coast. It is not seasonally adjusted, and prices vary anywhere from below 50 cents to around $4.50 in the 35+ years since the first observation was taken (April 1990).
+
+This dataset is interesting because fuel prices can vary for many different reasons. Aside from inflation, which accounts for the general upwards trend, seasonal and cyclical trends occur. The data is also sourced from the Gulf Coast, which has been historically unstable. That can lead to price spikes that will be hard to forecast.
+
+The only two columns in this dataset are "Date" and "Price", and there are a few missing values from over the years, but due to the patterns, which will be shown in the next section, the data should prove interesting to work with and forecast.
+
+# Results
+
+## Packages
+
+```{r packages}
+library(readr)
+library(lattice)
+library(foreign)
+library(MASS)
+library(car)
+require(stats)
+require(stats4)
+library(KernSmooth)
+library(fastICA)
+library(cluster)
+library(leaps)
+library(mgcv)
+library(rpart)
+library(pan)
+library(mgcv)
+library(DAAG)
+library("TTR")
+library(tis)
+require("datasets")
+require(graphics)
+library(forecast)
+require(astsa)
+library(RColorBrewer)
+library(plotrix)
+library(tsibble)
+library(ggplot2)
+library(tidyr)
+library(USgas)
+library(fpp3)
+library(fable.prophet)
+library(fabletools)
+library(feasts)
+```
+
+## Data Cleaning
+
+```{r data cleaning}
+set.seed(817)
+
+fuel_raw <- read_csv("DJFUELUSGULF.csv")
+head(fuel_raw)
+
+fuel_raw$observation_date <- as.Date(fuel_raw$observation_date)
+names(fuel_raw)[names(fuel_raw) == "DJFUELUSGULF"] <- "Fuel"
+
+fuel_ts <- as_tsibble(fuel_raw, index = observation_date) |>
+  fill_gaps() |>
+  mutate(Fuel = forecast::na.interp(Fuel))
+
+N <- nrow(fuel_ts)
+train_size <- floor(0.9 * N)
+
+fuel_train <- fuel_ts[1:train_size, ]
+fuel_test  <- fuel_ts[(train_size + 1):N, ]
+h <- nrow(fuel_test)
+
+ggplot(as.data.frame(fuel_raw),
+       aes(x = observation_date, y = Fuel)) +
+  geom_line(color = "black") +
+  labs(title = "Gulf Coast Jet Fuel Price (Unaltered)",
+       x = "Date", y = "Price (USD per gallon)") +
+  theme_minimal()
+
+ggplot(as.data.frame(fuel_ts),
+       aes(x = observation_date, y = Fuel)) +
+  geom_line(color = "black") +
+  labs(title = "Gulf Coast Jet Fuel Price (NAs Filled In)",
+       x = "Date", y = "Price (USD per gallon)") +
+  theme_minimal()
+
+```
+
+The above graphs show the time series of oil barrel prices in the Gulf since 1990. Graph one is unaltered, and graph two has the NAs taken care of. This is common practice in the world of forecasting.
+
+## Forecast 1: ARIMA Model
+
+```{r arima}
+fit_arima <- fuel_train |>
+  model(
+    arima = ARIMA(
+      Fuel ~ trend() + fourier("year", K = 5)
+    )
+  )
+
+report(fit_arima)
+
+fc_arima <- fit_arima |>
+  forecast(h = h)
+
+fc_arima_df <- fc_arima |>
+  mutate(
+    .mean   = sapply(Fuel, mean),
+    lower80 = sapply(Fuel, quantile, p = 0.10),
+    upper80 = sapply(Fuel, quantile, p = 0.90),
+    lower95 = sapply(Fuel, quantile, p = 0.025),
+    upper95 = sapply(Fuel, quantile, p = 0.975)
+  ) |>
+  as.data.frame()
+
+ggplot() +
+  geom_line(data = as.data.frame(fuel_train),
+            aes(x = observation_date, y = Fuel, colour = "Training"),
+            size = 0.4, na.rm = TRUE) +
+  geom_line(data = as.data.frame(fuel_test),
+            aes(x = observation_date, y = Fuel, colour = "Test"),
+            size = 0.4, na.rm = TRUE) +
+  geom_ribbon(data = fc_arima_df,
+              aes(x = observation_date, ymin = lower95, ymax = upper95,
+                  fill = "95% CI"),
+              alpha = 0.15, inherit.aes = FALSE) +
+  geom_ribbon(data = fc_arima_df,
+              aes(x = observation_date, ymin = lower80, ymax = upper80,
+                  fill = "80% CI"),
+              alpha = 0.30, inherit.aes = FALSE) +
+  geom_line(data = fc_arima_df,
+            aes(x = observation_date, y = .mean, colour = "ARIMA forecast"),
+            size = 0.8, na.rm = TRUE) +
+  labs(title = "ARIMA Forecast: Gulf Coast Jet Fuel Prices",
+       x = "Date", y = "Price (USD per barrel)") +
+  scale_colour_manual(values = c("Training" = "black",
+                                 "Test" = "grey60",
+                                 "ARIMA forecast" = "red")) +
+  scale_fill_manual(values = c("80% CI" = "pink",
+                               "95% CI" = "lightgrey")) +
+  theme_minimal() +
+  guides(colour = guide_legend(title = "Series"),
+         fill   = guide_legend(title = "Intervals"))
+```
+
+The Arima forecast model, which is ARIMA(0,0,4)(0,0,2)[7] containing seasonality and trend, does a good job predicting the oil price drop, but then predicts a steady increase of oil prices that echo earlier trends. It did not think that it would take so long for prices to recover. It covers the rough shape of the graph well, but does not do a great job predicting values and the trend is incorrect.
+
+## Forecast 2: ETS Model
+
+```{r ets}
+fit_ets <- fuel_train |>
+  model(
+    ets = ETS(Fuel ~ error("A") + trend("Ad") + season("N"))
+  )
+
+report(fit_ets)
+
+fc_ets <- fit_ets |>
+  forecast(h = h)
+
+fc_ets_df <- fc_ets |>
+  mutate(
+    .mean   = sapply(Fuel, mean),
+    lower80 = sapply(Fuel, function(z) quantile(z, p = 0.10)),
+    upper80 = sapply(Fuel, function(z) quantile(z, p = 0.90)),
+    lower95 = sapply(Fuel, function(z) quantile(z, p = 0.025)),
+    upper95 = sapply(Fuel, function(z) quantile(z, p = 0.975))
+  ) |>
+  as.data.frame()
+
+ggplot() +
+  geom_line(data = as.data.frame(fuel_train),
+            aes(x = observation_date, y = Fuel, colour = "Training"),
+            size = 0.4, na.rm = TRUE) +
+  geom_line(data = as.data.frame(fuel_test),
+            aes(x = observation_date, y = Fuel, colour = "Test"),
+            size = 0.4, na.rm = TRUE) +
+  geom_ribbon(data = fc_ets_df,
+              aes(x = observation_date, ymin = lower95, ymax = upper95,
+                  fill = "95% CI"),
+              alpha = 0.15, inherit.aes = FALSE) +
+  geom_ribbon(data = fc_ets_df,
+              aes(x = observation_date, ymin = lower80, ymax = upper80,
+                  fill = "80% CI"),
+              alpha = 0.30, inherit.aes = FALSE) +
+  geom_line(data = fc_ets_df,
+            aes(x = observation_date, y = .mean, colour = "ETS forecast"),
+            size = 0.8, na.rm = TRUE) +
+  labs(title = "ETS (A, Ad, N) Forecast: Gulf Coast Jet Fuel Prices",
+       x = "Date", y = "Price (USD per gallon)") +
+  scale_colour_manual(values = c("Training" = "black",
+                                 "Test" = "grey60",
+                                 "ETS forecast" = "orange")) +
+  scale_fill_manual(values = c("80% CI" = "moccasin",
+                               "95% CI" = "lightgrey")) +
+  theme_minimal() +
+  guides(colour = guide_legend(title = "Series"),
+         fill   = guide_legend(title = "Intervals"))
+```
+The ETS (A, Ad, N) model includes a damped additive trend and no seasonality, which causes its long-run forecast to flatten out very quickly. As a result, the model projects an almost constant price level over the test period, failing to capture the slight upward movement present in the actual data. This leads to poor predictive performance, and several of the test observations fall outside the 80% prediction interval. Overall, the heavy damping and lack of seasonal structure make this ETS specification too rigid to adapt to the dynamics in the jet fuel price series.
+
+## Forecast 3: Holt-Winters
+
+```{r holt winters}
+fit_hw <- fuel_train |>
+  model(
+    hw = ETS(Fuel ~ error("A") + trend("A") + season("A"))
+  )
+
+report(fit_hw)
+
+fc_hw <- fit_hw |>
+  forecast(h = h)
+
+fc_hw_df <- fc_hw |>
+  mutate(
+    .mean   = sapply(Fuel, mean),
+    lower80 = sapply(Fuel, quantile, p = 0.10),
+    upper80 = sapply(Fuel, quantile, p = 0.90),
+    lower95 = sapply(Fuel, quantile, p = 0.025),
+    upper95 = sapply(Fuel, quantile, p = 0.975)
+  ) |>
+  as.data.frame()
+
+ggplot() +
+  geom_line(data = as.data.frame(fuel_train),
+            aes(x = observation_date, y = Fuel, colour = "Training"),
+            size = 0.4, na.rm = TRUE) +
+  geom_line(data = as.data.frame(fuel_test),
+            aes(x = observation_date, y = Fuel, colour = "Test"),
+            size = 0.4, na.rm = TRUE) +
+  geom_ribbon(data = fc_hw_df,
+              aes(x = observation_date, ymin = lower95, ymax = upper95,
+                  fill = "95% CI"),
+              alpha = 0.15, inherit.aes = FALSE) +
+  geom_ribbon(data = fc_hw_df,
+              aes(x = observation_date, ymin = lower80, ymax = upper80,
+                  fill = "80% CI"),
+              alpha = 0.30, inherit.aes = FALSE) +
+  geom_line(data = fc_hw_df,
+            aes(x = observation_date, y = .mean, colour = "HW forecast"),
+            size = 0.8, na.rm = TRUE) +
+  labs(title = "Holt–Winters (ETS-AAA) Forecast: Gulf Coast Jet Fuel Prices",
+       x = "Date", y = "Price (USD per gallon)") +
+  scale_colour_manual(values = c("Training" = "black",
+                                 "Test" = "grey60",
+                                 "HW forecast" = "yellow3")) +
+  scale_fill_manual(values = c("80% CI" = "khaki1",
+                               "95% CI" = "lightgrey")) +
+  theme_minimal() +
+  guides(colour = guide_legend(title = "Series"),
+         fill   = guide_legend(title = "Intervals"))
+```
+The Holt–Winters model extends the historical pattern by projecting a continued decline, driven by its additive trend and seasonal components. Unlike the  ETS model, which flattens out quickly, Holt–Winters continues pushing prices downward, causing it to diverge even more from the test data, which actually trends slightly upward. The model also produces wider confidence intervals because the seasonal component increases forecast uncertainty. Although it captures the downward momentum at the end of the training period, it overestimates the strength of that decline, making it, too, a poor fit for this test window.
+
+## Forecast 4: NNETAR
+
+```{r nnetar}
+library(forecast)
+
+set.seed(817)
+
+h_nnet <- nrow(fuel_test)
+
+train_ts <- ts(fuel_train$Fuel, frequency = 7)
+
+fit_nnetar <- forecast::nnetar(train_ts, repeats = 5)
+
+summary(fit_nnetar)
+
+fc_nnetar_raw <- forecast::forecast(
+  fit_nnetar,
+  h  = h_nnet,
+  PI = FALSE
+)
+
+fc_nnetar_df <- data.frame(
+  observation_date = tail(fuel_ts$observation_date, h_nnet),
+  .mean            = as.numeric(fc_nnetar_raw$mean)
+)
+
+ggplot() +
+  geom_line(data = as.data.frame(fuel_train),
+            aes(x = observation_date, y = Fuel, colour = "Training"),
+            size = 0.4, na.rm = TRUE) +
+  geom_line(data = as.data.frame(fuel_test),
+            aes(x = observation_date, y = Fuel, colour = "Test"),
+            size = 0.4, na.rm = TRUE) +
+  geom_line(data = fc_nnetar_df,
+            aes(x = observation_date, y = .mean, colour = "NNETAR forecast"),
+            size = 0.8, na.rm = TRUE) +
+  labs(title = "NNETAR Forecast: Gulf Coast Jet Fuel Prices",
+       x = "Date", y = "Price (USD per gallon)") +
+  scale_colour_manual(values = c("Training" = "black",
+                                 "Test" = "grey60",
+                                 "NNETAR forecast" = "green3")) +
+  theme_minimal() +
+  guides(colour = guide_legend(title = "Series"))
+
+```
+
+This NNETAR model (Neural Network Auto Regression) is simplified due to compute limitations and essentially extrapolates the sharp decline present at the end of the training sample. It predicts a continued drop in prices followed by a leveling-off at a lower level, but it misses the sideways-to-upward movement seen in the test data and smooths out much of the short-run volatility. Visually, the NNETAR forecast diverges from the realized path toward the end of the sample, although it still captures the general idea of a lower post-peak price environment. A stronger computer could've allowed for better to more experimentation and could've adapted better to turning points in the series. 
+
+It is important to note that there are no CI bands here due to an R package issue and the forecast:: method taking too long.
+
+## Forecast 5: Prophet
+
+```{r prophet}
+fit_prophet <- fuel_train |>
+  model(
+    prophet = prophet(
+      Fuel ~
+        season(period = "week", order = 5) +
+        season(period = "year", order = 5)
+    )
+  )
+
+report(fit_prophet)
+
+fc_prophet <- fit_prophet |>
+  forecast(h = h)
+
+
+fc_prophet_df <- fc_prophet |>
+  mutate(
+    .mean   = sapply(Fuel, mean),
+    lower80 = sapply(Fuel, function(z) quantile(z, p = 0.10)),
+    upper80 = sapply(Fuel, function(z) quantile(z, p = 0.90)),
+    lower95 = sapply(Fuel, function(z) quantile(z, p = 0.025)),
+    upper95 = sapply(Fuel, function(z) quantile(z, p = 0.975))
+  ) |>
+  as.data.frame()
+
+ggplot() +
+  geom_line(data = as.data.frame(fuel_train),
+            aes(x = observation_date, y = Fuel, colour = "Training"),
+            size = 0.4, na.rm = TRUE) +
+  geom_line(data = as.data.frame(fuel_test),
+            aes(x = observation_date, y = Fuel, colour = "Test"),
+            size = 0.4, na.rm = TRUE) +
+  geom_ribbon(data = fc_prophet_df,
+              aes(x = observation_date, ymin = lower95, ymax = upper95,
+                  fill = "95% CI"),
+              alpha = 0.15, inherit.aes = FALSE) +
+  geom_ribbon(data = fc_prophet_df,
+              aes(x = observation_date, ymin = lower80, ymax = upper80,
+                  fill = "80% CI"),
+              alpha = 0.30, inherit.aes = FALSE) +
+  geom_line(data = fc_prophet_df,
+            aes(x = observation_date, y = .mean, colour = "Prophet forecast"),
+            size = 0.8, na.rm = TRUE) +
+  labs(title = "Prophet Forecast: Gulf Coast Jet Fuel Prices",
+       x = "Date", y = "Price (USD per gallon)") +
+  scale_colour_manual(values = c("Training" = "black",
+                                 "Test" = "grey60",
+                                 "Prophet forecast" = "blue")) +
+  scale_fill_manual(values = c("80% CI" = "lightblue",
+                               "95% CI" = "lightgrey")) +
+  theme_minimal() +
+  guides(colour = guide_legend(title = "Series"),
+         fill   = guide_legend(title = "Intervals"))
+
+```
+The Prophet model produces a smooth, seasonally adjusted forecast that continues the downward movement present at the end of the training data. Unlike the ARIMA model, which predicted a gradual rebound, Prophet anticipates an additional decline before leveling off. This behavior causes the forecast to diverge from the test data, which instead trends slightly upward during the same period. Although Prophet’s trend direction is incorrect, the model’s uncertainty intervals are relatively wide, and the a very slight majority of the test observations still fall within the 80% confidence bands (less for 95%). This suggests that while the central forecast is off, the interval coverage remains somewhat reasonable.
+
+## Forecast 6: Combination
+
+```{r combination}
+fc_combo_df <- data.frame(
+  observation_date = fc_arima_df$observation_date,
+  .mean   = rowMeans(cbind(fc_arima_df$.mean,
+                           fc_ets_df$.mean,
+                           fc_hw_df$.mean,
+                           fc_prophet_df$.mean), na.rm = TRUE),
+  lower80 = rowMeans(cbind(fc_arima_df$lower80,
+                           fc_ets_df$lower80,
+                           fc_hw_df$lower80,
+                           fc_prophet_df$lower80), na.rm = TRUE),
+  upper80 = rowMeans(cbind(fc_arima_df$upper80,
+                           fc_ets_df$upper80,
+                           fc_hw_df$upper80,
+                           fc_prophet_df$upper80), na.rm = TRUE),
+  lower95 = rowMeans(cbind(fc_arima_df$lower95,
+                           fc_ets_df$lower95,
+                           fc_hw_df$lower95,
+                           fc_prophet_df$lower95), na.rm = TRUE),
+  upper95 = rowMeans(cbind(fc_arima_df$upper95,
+                           fc_ets_df$upper95,
+                           fc_hw_df$upper95,
+                           fc_prophet_df$upper95), na.rm = TRUE)
+)
+
+ggplot() +
+  geom_line(data = as.data.frame(fuel_train),
+            aes(x = observation_date, y = Fuel, colour = "Training"),
+            size = 0.4, na.rm = TRUE) +
+  geom_line(data = as.data.frame(fuel_test),
+            aes(x = observation_date, y = Fuel, colour = "Test"),
+            size = 0.4, na.rm = TRUE) +
+  geom_ribbon(data = fc_combo_df,
+              aes(x = observation_date, ymin = lower95, ymax = upper95,
+                  fill = "95% CI"),
+              alpha = 0.15, inherit.aes = FALSE) +
+  geom_ribbon(data = fc_combo_df,
+              aes(x = observation_date, ymin = lower80, ymax = upper80,
+                  fill = "80% CI"),
+              alpha = 0.30, inherit.aes = FALSE) +
+  geom_line(data = fc_combo_df,
+            aes(x = observation_date, y = .mean, colour = "Combo forecast"),
+            size = 0.8, na.rm = TRUE) +
+  labs(title = "Combined Forecast: Gulf Coast Jet Fuel Prices",
+       x = "Date", y = "Price (USD per gallon)") +
+  scale_colour_manual(values = c("Training" = "black",
+                                 "Test" = "grey60",
+                                 "Combo forecast" = "purple")) +
+  scale_fill_manual(values = c("80% CI" = "plum2",
+                               "95% CI" = "lightgrey")) +
+  theme_minimal() +
+  guides(colour = guide_legend(title = "Series"),
+         fill   = guide_legend(title = "Intervals"))
+```
+The combined model takes a simple average of the forecasts from ARIMA, ETS, Holt–Winters, NNETAR, and Prophet. Because some of these models predict declines (Prophet, NNETAR, ARIMA) and others lean more toward flat or slowly increasing paths, the resulting ensemble produces a mild downward movement followed by a leveling-out. This makes the combined forecast smoother and less extreme than any individual model. While it does not capture the slight upward drift present in the test data, most of the test observations fall within the relatively wide prediction intervals. Overall, the combination forecast behaves like a softened, averaged compromise of the individual models rather than strongly matching any one of them.
+
+
+## All Models
+
+```{r all}
+all_fc_df <- rbind(
+  data.frame(
+    observation_date = fc_arima_df$observation_date,
+    value            = fc_arima_df$.mean,
+    model            = "ARIMA"
+  ),
+  data.frame(
+    observation_date = fc_ets_df$observation_date,
+    value            = fc_ets_df$.mean,
+    model            = "ETS"
+  ),
+  data.frame(
+    observation_date = fc_hw_df$observation_date,
+    value            = fc_hw_df$.mean,
+    model            = "HW"
+  ),
+  data.frame(
+    observation_date = fc_nnetar_df$observation_date,
+    value            = fc_nnetar_df$.mean,
+    model            = "NNETAR"
+  ),
+  data.frame(
+    observation_date = fc_prophet_df$observation_date,
+    value            = fc_prophet_df$.mean,
+    model            = "Prophet"
+  ),
+  data.frame(
+    observation_date = fc_combo_df$observation_date,
+    value            = fc_combo_df$.mean,
+    model            = "Combo"
+  )
+)
+
+ggplot() +
+  geom_line(data = as.data.frame(fuel_ts),
+            aes(x = observation_date, y = Fuel, colour = "Actual"),
+            size = 0.4, na.rm = TRUE) +
+  geom_line(data = all_fc_df,
+            aes(x = observation_date, y = value, colour = model),
+            size = 0.7, na.rm = TRUE) +
+  labs(title = "Gulf Coast Jet Fuel Price Forecasts: All Models",
+       x = "Date", y = "Price (USD per gallon)") +
+  scale_colour_manual(values = c(
+    "Actual"  = "black",
+    "ARIMA"   = "red",
+    "ETS"     = "orange",
+    "HW"      = "yellow3",
+    "NNETAR"  = "green3",
+    "Prophet" = "blue",
+    "Combo"   = "purple"
+  )) +
+  theme_minimal() +
+  guides(colour = guide_legend(title = "Series / Model"))
+
+```
+
+This graph layers all of the previous models on top of each other. There isn't much new to talk about, other than the fact that visually speaking, NNETAR definitely follows the actual data closest. Arima looks good too, as it's the only other model that predicted the price drop, but it overpredicted a bounce back. NNETAR did not anticipate that prices would rise, making it look closest to the test data.
+
+The figure overlays the forecasts from all six models alongside the actual jet fuel prices from the test period. Visually, several patterns emerge. ARIMA and NNETAR are the only models that correctly anticipate the initial decline in prices at the beginning of the test window. ARIMA, however, predicts a strong rebound that does not occur, causing it to deviate from the actual series. NNETAR captures the downturn but goes too far and continues drifting downward, missing the recovery in the test data. Prophet forecasts a decline as well but with smoother dynamics and a mild cyclical structure. Meanwhile, ETS and Holt–Winters both diverge from the test data: ETS flattens excessively due to heavy damping, while Holt–Winters projects an overly aggressive downward trend driven by its undamped additive trend. The combination model averages these behaviors, producing a smoother, more moderate forecast that stays closer to the center of the test observations.
+
+## Errors
+
+```{r errors, cache = F}
+arima_df <- merge(as.data.frame(fuel_test),
+                  fc_arima_df[, c("observation_date", ".mean")],
+                  by = "observation_date", all.x = TRUE)
+e_arima <- arima_df$Fuel - arima_df$.mean
+rmse_arima <- sqrt(mean(e_arima^2, na.rm = TRUE))
+mae_arima  <- mean(abs(e_arima), na.rm = TRUE)
+mape_arima <- mean(abs(e_arima / arima_df$Fuel), na.rm = TRUE) * 100
+mse_arima  <- mean(e_arima^2, na.rm = TRUE)
+
+ets_df <- merge(as.data.frame(fuel_test),
+                fc_ets_df[, c("observation_date", ".mean")],
+                by = "observation_date", all.x = TRUE)
+e_ets <- ets_df$Fuel - ets_df$.mean
+rmse_ets <- sqrt(mean(e_ets^2, na.rm = TRUE))
+mae_ets  <- mean(abs(e_ets), na.rm = TRUE)
+mape_ets <- mean(abs(e_ets / ets_df$Fuel), na.rm = TRUE) * 100
+mse_ets  <- mean(e_ets^2, na.rm = TRUE)
+
+hw_df <- merge(as.data.frame(fuel_test),
+               fc_hw_df[, c("observation_date", ".mean")],
+               by = "observation_date", all.x = TRUE)
+e_hw <- hw_df$Fuel - hw_df$.mean
+rmse_hw <- sqrt(mean(e_hw^2, na.rm = TRUE))
+mae_hw  <- mean(abs(e_hw), na.rm = TRUE)
+mape_hw <- mean(abs(e_hw / hw_df$Fuel), na.rm = TRUE) * 100
+mse_hw  <- mean(e_hw^2, na.rm = TRUE)
+
+nnetar_df <- merge(as.data.frame(fuel_test),
+                   fc_nnetar_df[, c("observation_date", ".mean")],
+                   by = "observation_date", all.x = TRUE)
+e_nnetar <- nnetar_df$Fuel - nnetar_df$.mean
+rmse_nnetar <- sqrt(mean(e_nnetar^2, na.rm = TRUE))
+mae_nnetar  <- mean(abs(e_nnetar), na.rm = TRUE)
+mape_nnetar <- mean(abs(e_nnetar / nnetar_df$Fuel), na.rm = TRUE) * 100
+mse_nnetar  <- mean(e_nnetar^2, na.rm = TRUE)
+
+prophet_df <- merge(as.data.frame(fuel_test),
+                    fc_prophet_df[, c("observation_date", ".mean")],
+                    by = "observation_date", all.x = TRUE)
+e_prophet <- prophet_df$Fuel - prophet_df$.mean
+rmse_prophet <- sqrt(mean(e_prophet^2, na.rm = TRUE))
+mae_prophet  <- mean(abs(e_prophet), na.rm = TRUE)
+mape_prophet <- mean(abs(e_prophet / prophet_df$Fuel), na.rm = TRUE) * 100
+mse_prophet  <- mean(e_prophet^2, na.rm = TRUE)
+
+combo_df <- merge(as.data.frame(fuel_test),
+                  fc_combo_df[, c("observation_date", ".mean")],
+                  by = "observation_date", all.x = TRUE)
+e_combo <- combo_df$Fuel - combo_df$.mean
+rmse_combo <- sqrt(mean(e_combo^2, na.rm = TRUE))
+mae_combo  <- mean(abs(e_combo), na.rm = TRUE)
+mape_combo <- mean(abs(e_combo / combo_df$Fuel), na.rm = TRUE) * 100
+mse_combo  <- mean(e_combo^2, na.rm = TRUE)
+
+
+library(fabletools)
+
+g_arima   <- fabletools::glance(fit_arima)
+g_ets     <- fabletools::glance(fit_ets)
+g_hw      <- fabletools::glance(fit_hw)
+g_prophet <- fabletools::glance(fit_prophet)
+
+AIC_arima <- if ("AIC" %in% names(g_arima)) g_arima$AIC else NA_real_
+BIC_arima <- if ("BIC" %in% names(g_arima)) g_arima$BIC else NA_real_
+
+AIC_ets   <- if ("AIC" %in% names(g_ets))   g_ets$AIC   else NA_real_
+BIC_ets   <- if ("BIC" %in% names(g_ets))   g_ets$BIC   else NA_real_
+
+AIC_hw    <- if ("AIC" %in% names(g_hw))    g_hw$AIC    else NA_real_
+BIC_hw    <- if ("BIC" %in% names(g_hw))    g_hw$BIC    else NA_real_
+
+AIC_prophet <- if ("AIC" %in% names(g_prophet)) g_prophet$AIC else NA_real_
+BIC_prophet <- if ("BIC" %in% names(g_prophet)) g_prophet$BIC else NA_real_
+
+AIC_nnetar <- tryCatch(AIC(fit_nnetar), error = function(e) NA_real_)
+BIC_nnetar <- tryCatch(BIC(fit_nnetar), error = function(e) NA_real_)
+
+AIC_combo <- NA_real_
+BIC_combo <- NA_real_
+
+
+model_errors <- rbind(
+  data.frame(Model = "ARIMA",
+             RMSE = rmse_arima,   MAE = mae_arima,
+             MAPE = mape_arima,   MSE = mse_arima,
+             AIC = AIC_arima,     BIC = BIC_arima),
+  data.frame(Model = "ETS",
+             RMSE = rmse_ets,     MAE = mae_ets,
+             MAPE = mape_ets,     MSE = mse_ets,
+             AIC = AIC_ets,       BIC = BIC_ets),
+  data.frame(Model = "Holt-Winters",
+             RMSE = rmse_hw,      MAE = mae_hw,
+             MAPE = mape_hw,      MSE = mse_hw,
+             AIC = AIC_hw,        BIC = BIC_hw),
+  data.frame(Model = "NNETAR",
+             RMSE = rmse_nnetar,  MAE = mae_nnetar,
+             MAPE = mape_nnetar,  MSE = mse_nnetar,
+             AIC = AIC_nnetar,    BIC = BIC_nnetar),
+  data.frame(Model = "Prophet",
+             RMSE = rmse_prophet, MAE = mae_prophet,
+             MAPE = mape_prophet, MSE = mse_prophet,
+             AIC = AIC_prophet,   BIC = BIC_prophet),
+  data.frame(Model = "Combination",
+             RMSE = rmse_combo,   MAE = mae_combo,
+             MAPE = mape_combo,   MSE = mse_combo,
+             AIC = AIC_combo,     BIC = BIC_combo)
+)
+
+model_errors <- as.data.frame(model_errors)  
+rownames(model_errors) <- NULL               
+model_errors
+```
+The error metrics provide clearer evidence of model performance. The combination model achieves the lowest RMSE, MAE, MAPE, and MSE of all six approaches, indicating that averaging the forecasts meaningfully improves predictive accuracy and reduces overall bias. Its MAPE of roughly 6.6% is substantially lower than that of the next-best individual model. Prophet performs the strongest among the standalone models across most error metrics, with errors well below those of ARIMA, ETS, and Holt–Winters, and slightly better performance than NNETAR despite the latter following the actual series more closely during the earliest part of the testing set. ARIMA, despite its overpredicted rebound, still performs competitively on RMSE and MAE but exhibits the highest MAPE of the group. The ETS and Holt–Winters models clearly underperform, reflecting their inability to adapt to the turning point and short-term dynamics at the end of the sample. As expected, AIC and BIC values are only available for the likelihood-based models, where ARIMA significantly outperforms ETS and Holt–Winters.
+
+# Conclusions and Future Work
+
+
+In this project, we modeled Gulf Coast jet fuel prices using six forecasting approaches: ARIMA, ETS, Holt–Winters, NNETAR, Prophet, and an equal-weight combination of four of these models. Before modeling, we addressed missing values in the original FRED time series by interpolating them, which allowed us to work with a continuous  series while preserving the shape of the data. We also used a 90/10 train–test split, and the split point happened to fall close to the peak in jet fuel prices. This made the forecasting problem intentionally challenging, since the models were tasked with predicting a downturn and slower recovery rather than a  continuation of past trends. The out-of-sample error metrics (RMSE, MAE, MAPE, and MSE) indicate that the combination model performed best overall, achieving the lowest errors across all categories. Among the individual models, Prophet delivered the numerical performance, while NNETAR visually followed the initial portion of the test data more closely but ultimately produced larger overall errors. ARIMA captured the initial decline and general shape but incorrectly predicted a strong rebound, reflected in its relatively high MAPE despite their lowest AIC/BIC values among the likelihood-based models. ETS and Holt–Winters underperformed because they either flattened too aggressively or extended the downward trend too strongly.
+
+There are several directions for future work that could improve or extend our analysis. First, we could experiment with alternative train–test schemes, such as rolling-origin cross-validation or different split dates, to see how sensitive our conclusions are to the choice of test window, especially given that our current split occurs near a local maximum. Second, we could explore more advanced neural network types if we had more computing power, and investigate ways to recover uncertainty estimates for these models. Third, we could incorporate external regressors such as  oil prices, macroeconomic indicators, or dummy variables for major geopolitical or weather events in the Gulf Coast, which might help explain extreme spikes and improve forecast accuracy. Finally, we could aggregate the series to weekly or monthly frequency to study longer-run dynamics and compare those results with daily models, and we could also test alternative weighting schemes to see if a different construction can outperform the simple equal-weighted average used here.
+
+
+# References
+
+The dataset we used for this project (DJFUELUSGULF) was sourced from FRED and can be found here: https://fred.stlouisfed.org/series/DJFUELUSGULF. No other sources were used.
+
+

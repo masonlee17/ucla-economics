@@ -1,0 +1,56 @@
+---
+title: "Econ 103 Project 2"
+author: "Mason Lee"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r}
+library(Lahman)
+library(tidyverse)
+library(ggplot2)
+library(car)
+```
+
+```{r}
+#data(package = "Lahman")
+
+data(Pitching)
+
+head(Pitching)
+
+data(pitchingLabels)
+
+pitchingLabels
+```
+
+```{r}
+Pitching_full <- Pitching
+
+Pitching_full <- Pitching_full %>% 
+  filter(GS > 0, IPouts > 100) %>%
+  mutate(SOrate = SO / IPouts, HRper9 = HR * 27 / IPouts, OutRate = BFP / IPouts)
+
+tail(Pitching_full)
+```
+
+```{r}
+#install.packages("Boruta")
+
+library(Boruta)
+
+#install.packages("ranger", dependencies = TRUE)
+
+response_variable <- "W"
+
+predictors <- setdiff(names(Pitching_full), response_variable)
+
+boruta_formula <- as.formula(paste(response_variable, "~ ."))
+
+boruta_result <- Boruta(boruta_formula, data = Pitching_full, doTrace = 2)
+
+boruta_result
+
+```
+installed.packages()["ranger", ]
+

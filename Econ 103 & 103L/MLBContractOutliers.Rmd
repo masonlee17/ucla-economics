@@ -1,0 +1,486 @@
+---
+title: "MLB Contract Outliers"
+author: "Mason Lee"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+## Introduction
+
+The goal for this project is two fold: create a regression model to predict a player's fair contract value based on the prior seasons' statistics, and then analyze the outliers. In other words, which player's seasons were over/undervalued, are there trends between them, and what may have caused standard metrics to fail in their cases. Questions I want to answer are as follows: do front offices tend to misvalue certain types of players, what metrics are best when assessing on-the-field value, and is there a way to quantify off-the-field value, such as sponsorships and clubhouse chemistry. To do this, I will be primarily using Lahman Datasets and the Baseballr Package.
+
+Off the bat, I can anticipate a few issues. First off, salary inflation has increased significantly year over year while traditional counting stats have stayed fairly constant and the average-based stats have dropped. I won't be able to use the contract value as is because I will never be able to fit a linear regression model to data that crosses different decades. I will need to come up with a different way to quantify salaries that stays relatively constant between the 1985, which is where the "Salaries" dataset begins, and 2016, which is the most recent season available. I will also need to find a creative way to define an outlier, as simply looking at a predicted salary will not tell the full story.
+
+#### 1. Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+```{r Packages}
+library(ggplot2)
+library(mosaic)
+library(baseballr)
+library(knitr)
+library(car)
+library(Lahman)
+```
+
+```{r Lahman Data}
+data("Teams")
+head(Teams)
+
+data("Batting")
+head(Batting)
+
+data("Fielding")
+head(Fielding)
+```
+
+#### 2. Creating Dataset
+
+The Lahmnan package does not have a dataset that combines a player's salary with their offensive production, so I will have to add a salary column to the standard batting. I will also be adding the InnOuts stat from the Fielding Package and creating some of the traditional batting metrics.
+
+Adding each player's Team may also prove useful, as it provides an easy way to divide the dataset up into smaller pieces if necessary.
+
+I will first have to edit the Fielding Dataset to combine outs made across multiple positions into one single value. This will simplify the modeling later as results will be skewed if players have multiple rows in the same year due to different positions being played.
+
+```{r Fielding Manipulation}
+FieldingClean <- Fielding[c(1, 2, 9)]
+
+FieldingClean <- FieldingClean %>%
+  group_by(playerID, yearID) %>%
+  summarize(InnOuts = sum(InnOuts), .groups = 'drop') %>%
+  ungroup()
+      
+
+FieldingClean <- na.omit(FieldingClean)    
+
+head(FieldingClean)
+```
+
+```{r Data Manipulation}
+
+BattingSal <- Batting %>%
+  left_join(Lahman::Salaries %>% select(yearID, playerID, salary), by = c("playerID", "yearID")) %>%
+  left_join(Teams %>% select(yearID, teamID, W), by = c("yearID", "teamID")) %>%
+  left_join(FieldingClean %>% select(playerID, yearID, InnOuts), by = c("playerID", "yearID")) %>%
+  filter(AB > 0, G > 0) %>%
+  na.omit(Batting) %>%
+  group_by(yearID) %>%
+  mutate(BA = H / AB, 
+         Single = H - X2B - X3B - HR, 
+         TB = Single + 2 * X2B + 3 * X3B + 4 * HR,
+         SLG = TB / AB, 
+         OBP = (H + BB + HBP) / (AB + BB + HBP + SF), 
+         OPS = SLG + OBP,
+         PA = AB + BB + IBB + SF) %>%
+  mutate(minsalary = min(salary), avg_sal = mean(salary), salperavg = salary / avg_sal, 
+         zsal = (salary - avg_sal) / sd(salary), totalspent = sum(salary)) %>%
+  group_by(teamID, yearID) %>%
+  mutate(payroll = sum(salary, na.rm = TRUE)) %>%
+  ungroup() %>%
+  group_by(playerID)
+
+```
+
+The second "mutate" section is devoted to manipulating the salary stat into something more usable, such as a salary Z score or a salary in terms of league average.
+
+The following for loop adds a players next salary to the current row, which is what allows us to use data in a predictive manner. The loop checks to make sure the player played in the next year, and then brings in how much they made. If there is no subsequent year to pull data from, then the player will receive an NA, which is later dropped.
+
+```{r addprevsal}
+BattingSal[, 39] <- 0
+
+for (i in 1:(nrow(BattingSal) - 1)) {
+  if (BattingSal[i + 1, 1] == BattingSal[i, 1]) {
+    BattingSal[i, 39] <- BattingSal[i + 1, 23]
+  } else {
+    BattingSal[i, 39] <- NA
+  }
+}
+
+colnames(BattingSal)[39] <- "NextSal"
+
+```
+
+#### 3. Preliminary Modeling
+
+The first step to modeling will be coming up with a response variable that will work across multiple decades. I was originally going to use the salary Z score I generated in an earlier section, but having positive and negative regressors prevented me from using logarithmic scalers, and adding an arbitrary constant would result in an over weighing issue with the high value contracts. I have decided to work with salary/minsalary. Aside from 20-30 visual outliers in the early 2000s, the peak values are constant between 40 and 70 and a majority of players make below 20 times the league minimum (14,800,000 in 2024). I removed the 1993 data due to an issue with the data that allowed for some players to make 0, resulting in a years worth of NA values. I decided to leave the 1994 Strike season because players contracts ended up being prorated, so the shortened season shouldn't affect my model.
+
+```{r cleaning}
+BattingSal <- BattingSal %>%
+  na.omit(BattingSal) %>%
+  filter(AB > 100, minsalary > 0) %>%
+  group_by(yearID) %>%
+  mutate(nAdj = NextSal/minsalary) %>%
+  filter(nAdj > 5) %>%
+  ungroup()
+
+
+BattingClean <- BattingSal[, c(1, 2, 5:31, 39, 40)]
+BattingClean <- na.omit(BattingClean)
+
+plot(BattingClean$nAdj, BattingClean$yearID,
+     main = "Adjusted Batting Statistics Over Years",  
+     xlab = "Adjusted Batting (nAdj)",                
+     ylab = "Year",                                   
+     pch = 19,                                        
+     col = "#2C7BB6",                                 
+     cex = 0.5,                                       
+     las = 1                                          
+)
+```
+
+The following graphs were used to look at relationships between our regressor and some of the offensive metrics I think will be useful. The shapes of the graphs hint towards transformations that may prove useful in the modeling stage, and emerging patterns will help show which stats should be used versus ignored. OPS, SLG, and OBP all have strong positive correlations, and triples have a negative correlation to future salary. This may be because triples are typically hit by faster players that may be unable to generate the power necessary for a high OPS.
+
+```{r Graphs}
+# HR
+plot(BattingClean$nAdj, BattingClean$HR,
+     main = "Adjusted Batting (nAdj) vs Home Runs (HR)",
+     xlab = "Adjusted Batting (nAdj)", ylab = "Home Runs (HR)",
+     pch = 19, col = "#D7191C", cex = 0.7, las = 1)
+
+# SO
+plot(BattingClean$nAdj, BattingClean$SO,
+     main = "Adjusted Batting (nAdj) vs Strikeouts (SO)",
+     xlab = "Adjusted Batting (nAdj)", ylab = "Strikeouts (SO)",
+     pch = 19, col = "#FDAE61", cex = 0.7, las = 1)
+
+# OPS
+plot(BattingClean$nAdj, BattingClean$OPS,
+     main = "Adjusted Batting (nAdj) vs On-Base Plus Slugging (OPS)",
+     xlab = "Adjusted Batting (nAdj)", ylab = "OPS",
+     pch = 19, col = "#ABD9E9", cex = 0.7, las = 1)
+
+# G
+plot(BattingClean$nAdj, BattingClean$G,
+     main = "Adjusted Batting (nAdj) vs Games (G)",
+     xlab = "Adjusted Batting (nAdj)", ylab = "Games (G)",
+     pch = 19, col = "#2C7BB6", cex = 0.7, las = 1)
+
+# SLG
+plot(BattingClean$nAdj, BattingClean$SLG,
+     main = "Adjusted Batting (nAdj) vs Slugging (SLG)",
+     xlab = "Adjusted Batting (nAdj)", ylab = "Slugging (SLG)",
+     pch = 19, col = "#1A9641", cex = 0.7, las = 1)
+
+# OBP
+plot(BattingClean$nAdj, BattingClean$OBP,
+     main = "Adjusted Batting (nAdj) vs On-Base Percentage (OBP)",
+     xlab = "Adjusted Batting (nAdj)", ylab = "OBP",
+     pch = 19, col = "#D7191C", cex = 0.7, las = 1)
+
+# BB
+plot(BattingClean$nAdj, BattingClean$BB,
+     main = "Adjusted Batting (nAdj) vs Walks (BB)",
+     xlab = "Adjusted Batting (nAdj)", ylab = "Walks (BB)",
+     pch = 19, col = "#FDAE61", cex = 0.7, las = 1)
+
+# IBB
+plot(BattingClean$nAdj, BattingClean$IBB,
+     main = "Adjusted Batting (nAdj) vs Intentional Walks (IBB)",
+     xlab = "Adjusted Batting (nAdj)", ylab = "Intentional Walks (IBB)",
+     pch = 19, col = "#ABD9E9", cex = 0.7, las = 1)
+
+# X2B
+plot(BattingClean$nAdj, BattingClean$X2B,
+     main = "Adjusted Batting (nAdj) vs Doubles (X2B)",
+     xlab = "Adjusted Batting (nAdj)", ylab = "Doubles (X2B)",
+     pch = 19, col = "#2C7BB6", cex = 0.7, las = 1)
+
+# X3B
+plot(BattingClean$nAdj, BattingClean$X3B,
+     main = "Adjusted Batting (nAdj) vs Triples (X3B)",
+     xlab = "Adjusted Batting (nAdj)", ylab = "Triples (X3B)",
+     pch = 19, col = "#1A9641", cex = 0.7, las = 1)
+
+# AB
+plot(BattingClean$nAdj, BattingClean$AB,
+     main = "Adjusted Batting (nAdj) vs At-Bats (AB)",
+     xlab = "Adjusted Batting (nAdj)", ylab = "At-Bats (AB)",
+     pch = 19, col = "#D7191C", cex = 0.7, las = 1)
+
+plot(BattingClean$nAdj, BattingClean$InnOuts,
+     main = "Adjusted Batting (nAdj) vs At-Bats (AB)",
+     xlab = "Adjusted Batting (nAdj)", ylab = "At-Bats (AB)",
+     pch = 19, col = "#FDAE61", cex = 0.7, las = 1)
+```
+
+These next graphs look for skews in the stats. Most seems to be normally distributed (such as SLG), and therefore won't require adjustment, but HR is skewed (many players don't hit any Home Runs), and nAdj looks like the right half of a normal distribution.
+
+```{r histograms}
+# nAdj
+hist(BattingClean$nAdj, breaks = "scott",
+     main = "Histogram of Adjusted Batting (nAdj)",
+     xlab = "Adjusted Batting (nAdj)", 
+     col = "#ABD9E9", border = "#2C7BB6", las = 1)
+
+# OPS
+hist(BattingClean$OPS, breaks = "scott",
+     main = "Histogram of On-Base Plus Slugging (OPS)",
+     xlab = "OPS", 
+     col = "#FDAE61", border = "#D7191C", las = 1)
+
+# SLG
+hist(BattingClean$SLG, breaks = "scott",
+     main = "Histogram of Slugging Percentage (SLG)",
+     xlab = "SLG", 
+     col = "#2C7BB6", border = "#1A9641", las = 1)
+
+# BA
+hist(BattingClean$BA, breaks = "scott",
+     main = "Histogram of Batting Average (BA)",
+     xlab = "Batting Average (BA)", 
+     col = "#ABD9E9", border = "#2C7BB6", las = 1)
+
+# SO
+hist(BattingClean$SO, breaks = "scott",
+     main = "Histogram of Strikeouts (SO)",
+     xlab = "Strikeouts (SO)", 
+     col = "#D7191C", border = "#FDAE61", las = 1)
+
+# BB
+hist(BattingClean$BB, breaks = "scott",
+     main = "Histogram of Walks (BB)",
+     xlab = "Walks (BB)", 
+     col = "#ABD9E9", border = "#1A9641", las = 1)
+
+# HR
+hist(BattingClean$HR, breaks = "scott",
+     main = "Histogram of Home Runs (HR)",
+     xlab = "Home Runs (HR)", 
+     col = "#FDAE61", border = "#D7191C", las = 1)
+
+```
+
+#### 4. Modeling
+
+To come up with an analytic model to predict a player's future salary, I will be working iteratively, starting with only using statistics with a relationship to nAdj, then adding/subtracting terms as needed. I will be assessing the models by looking at R\^2 values, AIC and BIC, and VIF scores.
+
+I will also be predicting log(nAdj) instead of nAdj due to the skewed nature of the value.
+
+```{r model1}
+model1 <- lm(log(nAdj) ~ SO + OPS + G + X3B, data = BattingClean)
+
+summary(model1)
+vif(model1, type = "predictor")
+AIC(model1)
+BIC(model1)
+```
+
+No multicollinearity issues, and each stat is significant, so I will add some values with weaker relationships to nAdj in order to increase R\^2. AIC and BIC are comparative, so nothing to analyze with them yet.
+
+```{r model2}
+model2 <- lm(log(nAdj) ~ SO + OPS + G + X3B + X2B + RBI + H + BA, data = BattingClean)
+
+summary(model2)
+vif(model2, type = "predictor")
+AIC(model2)
+BIC(model2)
+```
+
+R\^2 has increased, AIC and BIC decreased, but multicollinearity is now an issue. I will be removing Hits, adding in a few more statistics, then evaluating again.
+
+```{r model3}
+model3 <- lm(log(nAdj) ~ SO + OPS + G + X3B + X2B + RBI + BA + AB + BB + InnOuts, data = BattingClean)
+
+summary(model3)
+vif(model3, type = "predictor")
+AIC(model3)
+BIC(model3)
+```
+
+AIC and BIC have dropped again, but AB is causing a multicollinearity issue. It will be switched out for HR.
+
+```{r model4}
+model4 <- lm(log(nAdj) ~ SO + OPS + G + X3B + X2B + RBI + BA + BB + InnOuts + HR, data = BattingClean)
+
+summary(model4)
+vif(model4, type = "predictor")
+AIC(model4)
+BIC(model4)
+```
+
+X3B is no longer significant, and HR is too correlated to OPS, so I will be experimenting with an interaction term in the next attempt.
+
+```{r model5}
+model5 <- lm(log(nAdj) ~ SO + G + X2B + RBI + BA + BB + InnOuts + OPS + HR + OPS*HR, data = BattingClean)
+
+summary(model5)
+vif(model5, type = "predictor")
+AIC(model5)
+BIC(model5)
+```
+
+Multicollinearity issue is stable, so I will add a few more terms and try to increase R\^2.
+
+```{r model6}
+model6 <- lm(log(nAdj) ~ SO + G + X2B + RBI + BA + BB + InnOuts + OPS + HR + OPS*HR + IBB + Single, data = BattingClean)
+
+summary(model6)
+vif(model6, type = "predictor")
+AIC(model6)
+BIC(model6)
+```
+
+This model has the lowest AIC/BIC figures, highest R\^2 so far, and no multicollinearity. It may benefit from some variable transformations.
+
+After looking at the variable relationship graphs, I replaced X2B with exp(X2B), RBI with log(RBI), and BA with exp(BA).
+
+```{r model7}
+model7 <- lm(log(nAdj) ~ SO + G + exp(X2B) + log(RBI) + exp(BA) + BB + InnOuts + OPS + HR + OPS*HR + IBB + Single, data = BattingClean)
+
+summary(model7)
+vif(model7, type = "predictor")
+AIC(model7)
+BIC(model7)
+```
+
+These transformations did not raise the R\^2, and made some variables less significant to the model, so model6 will be used to analyze MLB contracts. Although it does not account for much of the variability in contracts, some of that will have to do with off the field value.
+
+#### 5. Testing the Model
+
+```{r Model Plots}
+plot(model6, col = "blue")
+abline(h = 0, lty = 2, col = "red")
+
+plot(cooks.distance(model6), 
+     type = "h", 
+     main = "Cook's Distance", 
+     xlab = "Observation", 
+     ylab = "Cook's Distance", 
+     col = "blue")
+
+```
+
+The graphs above show that the model I have created performs well for most of the data, and is being impacted heavily by a few outliers. Based on the nature of MLB data (such as a salary floor, and percentage statistics of 0 being near impossible), the Residual vs. Fitted graph seems to have a diagonal base, but the values open up halfway through and show that the residuals are random, which is ideal.
+
+The QQ plot is optimal for the middle quantiles, but has tails on both ends. For the purposes of this project, which is to analyze the contracts that do not fit the model, this graph makes me think we will have a decent and even amount of under- and over-valued players.
+
+An ideal Scale-Location plot would feature a horizontal line across the middle of the data, and although ours isn't perfectly horizontal, it is horizontal enough to avoid any issues with heteroskedascity.
+
+The final graph, which just shows Cooks distance, reflects the same information as the Leverage plot. Although the exact outlier points aren't numbered, based on the x axis it is fair to assume they are the same three highlighted by the previous plot.
+
+#### 6. Finding Outliers
+
+Using Cooks Distance as my metric for determining outliers, the following code will produce a dataset with the points that most impacted the model. These are the seasons that will be known as outliers and further looked into.
+
+```{r Outliers}
+cooksd <- cooks.distance(model6)
+threshold <- 12 / (nrow(BattingClean) - length(coefficients(model6)))
+
+high_cooks <- which(cooksd > threshold)
+
+Outliers <- BattingClean[high_cooks, ]
+
+Outliers <- Outliers %>%
+  arrange(yearID)
+
+Outliers$pred <- predict(model6, newdata = Outliers)
+Outliers$pred <- exp(Outliers$pred)
+```
+
+The 9 in the second line was arbitrarily chosen in order to end up with roughly 20 observations, and the last line, in which the exp() is taken, was due to the logarithmic regression formula.
+
+#### 7. Key Findings
+
+##### General
+
+```{r}
+hist(Outliers$yearID, 
+     breaks = 20, 
+     col = "dodgerblue", 
+     border = "white", 
+     main = "Histogram of yearID", 
+     xlab = "Year", 
+     ylab = "Frequency")
+
+```
+
+One noticeable thing about the Outlier Dataset is the spread of years. My assumption was that contracts would closer fit the model as technology advanced, but there doesn't appear to be much of a change between the number of Outlier contracts before and after the Moneyball movement. Exactly half of the 22 Outliers identified took place pre-2000.
+
+```{r Splitting Data}
+BattingCleanLate <- BattingClean %>%
+  filter(yearID > 1999)
+
+BattingCleanEarly <- BattingClean %>%
+  filter(yearID < 2000)
+
+model6late <- lm(log(nAdj) ~ SO + G + X2B + RBI + BA + BB + InnOuts + OPS + HR + OPS*HR + IBB + Single, data = BattingCleanLate)
+
+model6early <- lm(log(nAdj) ~ SO + G + X2B + RBI + BA + BB + InnOuts + OPS + HR + OPS*HR + IBB + Single, data = BattingCleanEarly)
+```
+
+```{r Modeling Post 2000}
+summary(model6late)
+```
+
+```{r}
+summary(model6early)
+```
+
+Looking at the model applied to the original dataset split between pre- and post-2000 seasons, we see that the R\^2 actually decreases significantly after the Moneyball movement. I attribute this to my reliance on baseball card metrics rather than using more advanced statcast data and expected values.
+
+Another interesting finding was that the model I created generated an equal number of undervalued and overvalued players (11 each). This tells me that my model does not necessarily favor one type of player over another (contact vs power, DH vs fielder, for example).
+
+##### Player Specific
+
+```{r Adding Percentages}
+Outliers <- Outliers %>%
+  mutate(extrememetric = pred/nAdj)
+
+Batting <- Batting %>% 
+  mutate(BA = H / AB, 
+         Single = H - X2B - X3B - HR, 
+         TB = Single + 2 * X2B + 3 * X3B + 4 * HR,
+         SLG = TB / AB, 
+         OBP = (H + BB + HBP) / (AB + BB + HBP + SF), 
+         OPS = SLG + OBP,
+         PA = AB + BB + IBB + SF)
+  
+
+```
+
+The previous code chunk adds a new column to the dataset that I will be calling the Extreme Metric. It divides the predicted salary by nAdj in order to see how far each Outlier strayed from the model.
+
+Off the bat, there are a few standout seasons that deserve to be considered Outliers. For Example, Barry Bonds in 2004. Although now tainted by scandal, his 2004 MVP campaign was a legendary season. He was already being very well compensated (making 73.3 times the league minimum), but my model predicted he was worth close to triple that (213.3). This would put him at over 52,000,000. That is a value assessment the MLB didn't come close to touching until Shohei Ohtani's record setting 2023 contract.
+
+The pred value predicts what he should have made in the next year based on the previous years stats, and 2005 could not have been more different from Bonds. Offensive metrics can't foresee 14 game seasons, but unfortunately that is was 2005 had in store. Those 14 games did have 5 Home Runs and an OPS of over 1.
+
+```{r Barry Bonds}
+Outliers[16, ]
+
+Batting[9442, ]
+```
+
+On the other side of the spectrum we see the 2003 Ken Griffey Jr. season. Although usually only spoken about positively, and rightfully seen as someone who should have been a unanimous Hall of Famer, his 2003 season was disappointing at best, at least according to the model. His season was predicted to be 4 times less than what he actually earned, and the counting stats that go into the model support this conclusion. His 2003 WAR of 1.3 puts him at an average season. Surprisingly, his OPS was very good, and although his predicted value of 2,900,000 is nothing to laugh about, it was significantly less than 12,500,000. This was all due to his hamstring injury, and his next season he recovered well, becoming an All Star for the first time since 2000. His 2003 numbers predicted an overvalued 2004, but fortunately he was able to improve, making his original contract make sense.
+
+```{r Ken Griffey Jr.}
+Outliers[14, ]
+
+Batting[39462, ]
+```
+
+The most overvalued player was Ozzie Guillen in 1997. In 1996, he played the full season, nearly cracking 500 At Bats, but only put up 4 Home Runs. He wasn't known as a slugger, which is reflected in his incredibly low strike out rate of 5.4%, but a contact hitter is supposed to get on base more than 27% of the time. His .639 OPS was very below average, and not worth 4 million dollars.
+
+He ended up earning more the next year despite not providing much offensive value in 1996. His 1997 season was very similar, but based on the raise he received, it ended up being more of an Outlier. My model would pay him 720,000, which seems fair for the aging player.
+
+It is possible that this contract that may have benefited from him winning Rookie of the Year 11 years prior. He stuck around for 3 more years before retiring, and ended up leading the White Sox to a World Series as manager in 2005.
+
+```{r Ozzie Guillen}
+Outliers[5, ]
+
+Batting[40343, ]
+```
+
+Most surprisingly to me was how Mark McGwire made the Outliers list in 4 different seasons. He had an incredibly start to his season, winning ROY and receiving all-star votes in his first 4 full seasons. This led to a large contract, which McGwire wasn't able to live up to until he began using steroids, leading to the famous home run chase.
+
+```{r Mark McGwire}
+Outliers[c(3, 4, 7, 11), ]
+```
+
+#### 8. Conclusion
+
+Although my model was far from perfect, and did not do a great job predicting a future salary, it found some very interesting takeaways. Contrary to popular belief, contracts have not gotten significantly more accurate over time.
+
+I did not notice any trends in the prediction errors between player types. Guys who hit the ball hard appeared next to guys who hit the ball more. The one trend I noticed was the frequency of well known players. It seemed like each player had won awards and had been All Stars. Many went on to be Hall of Famers. Although it isn't empirical, it seems like notoriety played a major factor in large contracts.

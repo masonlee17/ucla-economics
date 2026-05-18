@@ -1,0 +1,408 @@
+---
+title: "HW1 Econ144"
+author: "Mason Lee"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, knit = TRUE)
+```
+
+
+```{r data and packages}
+library(readr)
+library(lattice)
+library(foreign)
+library(MASS)
+library(car)
+require(stats)
+require(stats4)
+library(KernSmooth)
+library(fastICA)
+library(cluster)
+library(leaps)
+library(mgcv)
+library(rpart)
+library(pan)
+library(mgcv)
+library(DAAG)
+library("TTR")
+library(tis)
+require("datasets")
+require(graphics)
+library(forecast)
+require(astsa)
+library(RColorBrewer)
+library(plotrix)
+library(tsibble)
+library(ggplot2)
+library(tidyr)
+library(USgas)
+library(fpp3)
+
+q1 <- read_csv("q1data.csv")
+tute1 <- read_csv("tute1.csv")
+```
+
+# Textbook A
+
+## 3.1
+
+### a)
+
+```{r q1a}
+plot(q1$date_num, q1$rpce)
+plot(q1$date_num, q1$rdpi)
+g_rpce <- 100 * diff(log(q1$rpce))
+g_rpdi <- 100 * diff(log(q1$rdpi))
+
+mean(g_rpce)
+sd(g_rpce) #for volatility
+
+mean(g_rpdi)
+sd(g_rpdi) #for volatility
+```
+
+The mean month over month growth rates of rcpe and rdpi are very similar, but rdpi is much more volatile. This aligns well with the permanent income model, which states that consumption growth is less volatile than income growth. Consumption doesn't react much to short term changes in income.
+
+### b)
+
+```{r 1b}
+summary(lm(g_rpce ~ g_rpdi))
+```
+The linear regression formula (g_rcpe = 0.22542 + 0.17457*g_rdpi) tells us that for every increase of 1 in g_rdpi, rcpe goes up by 0.17457. The R squared value of 0.05163 tells us that the linear relationship is weak, and that there is almost no correlation in growth rates.
+
+### c)
+
+```{r 1c}
+gy_l1 <- c(NA, head(g_rpdi, -1))
+
+df <- na.omit(data.frame(g_rpce, g_rpdi, gy_l1))
+
+m2 <- lm(g_rpce ~ g_rpdi + gy_l1, data = df)
+summary(m2)
+```
+After adding in the lag, we see that both the growth rate and the lag of income affect the growth rate in personal consumption. They are both significant variables. In this new regression, R squared went up to 0.06. It is still a bad fit, but it did increase slightly.
+
+
+## 3.5
+
+### a)
+
+```{r 2a}
+date <- as.Date(c(
+  "2001-01-01","2001-04-01","2001-07-01","2001-10-01",
+  "2002-01-01","2002-04-01","2002-07-01","2002-10-01",
+  "2003-01-01","2003-04-01","2003-07-01","2003-10-01",
+  "2004-01-01","2004-04-01","2004-07-01","2004-10-01"
+))
+
+Y <- c(10021.5,10128.9,10135.1,10226.3,
+       10338.2,10445.7,10546.5,10617.5,
+       10744.6,10884.0,11116.7,11270.9,
+       11472.6,11657.5,11814.9,11994.8)
+
+Y_ts <- ts(Y, start = c(2001,1), frequency = 4)
+plot(Y_ts)
+```
+Y is not weakly stationary due to the uptick. The mean is not constant.
+
+### b)
+
+```{r 2b}
+g1 <- 100 * diff(Y) / head(Y, -1)             
+g1_ts <- ts(g1, start = c(2001, 2), frequency = 4)
+
+head(g1)
+head(g1_ts)
+```
+
+### c)
+
+```{r 2c}
+y  <- log(Y)
+y_ts <- ts(y, start = c(2001,1), frequency = 4)
+
+plot(y_ts)
+```
+
+This new plot is smoother and more linear than the non-logarithmic version. It is still not weakly stationary due to it trending upwards.
+
+
+### d)
+
+```{r 2d}
+g2  <- 100 * diff(y)
+g2_ts <- ts(g2, start = c(2001,2), frequency = 4)
+
+head(g2)
+head(g2_ts)
+```
+### e)
+
+```{r 2e}
+comp1 <- cbind(g1, g2)
+comp1
+```
+The percent change (g1) and the log growth (g2) figures are almost identical. This echoes what we noticed in the graphs (part a and c), which were very similar but slightly different in the middle.
+
+
+## 3.6
+
+### a)
+
+```{r 3a}
+samp_moment <- mean(g2)
+var_g2 <- var(g2)
+
+samp_moment
+var_g2
+```
+
+### b)
+
+```{r 3b}
+rho <- acf(g2, plot = FALSE, lag.max = 4)$acf[2:5]
+rho
+
+g2_l1 <- c(NA, head(g2, -1))
+g2_l2 <- c(NA, NA, head(g2, -2))
+g2_l3 <- c(NA, NA, NA, head(g2, -3))
+g2_l4 <- c(NA, NA, NA, NA, head(g2, -4))
+
+
+plot(g2_l1, g2); abline(lm(g2 ~ g2_l1))
+plot(g2_l2, g2); abline(lm(g2 ~ g2_l2))
+plot(g2_l3, g2); abline(lm(g2 ~ g2_l3))
+plot(g2_l4, g2); abline(lm(g2 ~ g2_l4))
+```
+Interpretation: Quarterly GDP growth has a slight autocorrelation with lags, most notably the lag at k=1. This means that behaviors and production adjusts primarily to reflect the previous quarter. Quarters before t=-1 are also a factor, but not by as much.
+
+#Textbook B
+
+## 2.10.3
+
+### a)
+
+```{r 4a}
+tute1 <- read_csv("tute1.csv")
+#view(tute1)
+```
+
+### b) 
+
+```{r 4b}
+mytimeseries <- tute1 |>
+  mutate(Quarter = yearquarter(Quarter)) |>
+  as_tsibble(index = Quarter)
+```
+
+### c)
+
+```{r 4c}
+mytimeseries |>
+  pivot_longer(-Quarter) |>
+  ggplot(aes(x = Quarter, y = value, colour = name)) +
+  geom_line() +
+  facet_grid(name ~ ., scales = "free_y")
+```
+
+When the facet_grid() line is removed, the three graphs are combined into one larger plot
+
+## 2.10.4
+
+### a)
+
+```{r 5a}
+#install.packages("USgas")
+```
+### b)
+
+```{r 5b}
+gas <- as_tsibble(us_total, index = year, key = state)
+```
+
+### c)
+
+```{r 5c}
+ne <- c("Maine","Vermont","New Hampshire","Massachusetts","Connecticut","Rhode Island")
+
+gas %>%
+  filter(state %in% ne) %>%
+  ggplot(aes(x = year, y = y, color = state, group = state)) +
+  geom_line()
+
+```
+
+## 2.10.7
+
+```{r 6}
+#install.packages("fpp3")
+
+set.seed(205259899)
+myseries <- aus_retail |>
+  filter(`Series ID` == sample(aus_retail$`Series ID`,1))
+
+autoplot(myseries)
+gg_season(myseries)
+gg_subseries(myseries)
+gg_lag(myseries)
+```
+It seems like turnover spiked in Jan 2010, and never returned to previous average levels. There tends to be a turnover spike in July - November compared to the other months. Adding in lags doesn't change the graphs too much, but it seems to add more variance around lag 3.
+
+## 2.10.9
+
+1 = B
+2 = A
+3 = D
+4 = C
+
+## 3.7.1
+
+```{r 8}
+ge <- global_economy |>
+  mutate(gdp_pc = GDP / Population) |>
+  arrange(desc(gdp_pc))
+
+head(ge)
+
+ge |>
+  ggplot(aes(Year, gdp_pc, group = Country)) +
+  geom_line(alpha = 0.35)
+```
+Highest GDP/Cap ever was 2014 Monaco at 185k, but the top country right now is Luxemborg. The top country changes a lot year by year, most recently between Monaco and Luxemberg but historically there have been other frontrunners, like Lichtenstein (according to the data table)
+
+
+## 3.7.7
+
+```{r pre}
+gas <- tail(aus_production, 5*4) |> dplyr::select(Gas)
+```
+
+
+### a)
+
+```{r 9a}
+autoplot(gas, Gas)
+```
+
+Yes, every Q1, sales bottom out, and every Q3, they peak for the year. The graph has an overall positive trend, with each year improving on the previous year
+
+
+### b)
+
+```{r 9b}
+gas_ts <- gas |>
+  mutate(Quarter = yearquarter(as.character(Quarter)) |> tsibble::yearquarter()) |>
+  mutate(Quarter = tsibble::yearquarter(Quarter)) |>  # idempotent; safe
+  as_tsibble(index = Quarter)
+
+fit <- gas_ts |>
+  model(classical_decomposition(Gas, type = "multiplicative"))
+
+cmp <- components(fit)
+autoplot(cmp)
+
+```
+### c)
+
+The above graphs confirm the data. There is a clear seasonal pattern, and an upwards trend is present. There is some randomness present, which is good because this is a real dataset, but the randomness does not alter the patterns.
+
+### d)
+
+```{r 9d}
+yr1 <- as.integer(substr(as.character(gas$Quarter[1]), 1, 4))
+q1  <- as.integer(sub(".*Q", "", as.character(gas$Quarter[1])))
+g_ts <- ts(gas$Gas, start = c(yr1, q1), frequency = 4)
+
+dc <- decompose(g_ts, type = "multiplicative")
+
+g_sa <- dc$x / dc$seasonal
+
+plot(g_sa, type = "l")
+
+```
+
+### e
+
+```{r 9e}
+gas_outlier <- gas %>%
+  mutate(Gas = if_else(row_number() == 10, Gas + 300, Gas))
+
+yr1 <- as.integer(substr(as.character(gas_outlier$Quarter[1]), 1, 4))
+q1  <- as.integer(sub(".*Q", "", as.character(gas_outlier$Quarter[1])))
+g_ts <- ts(gas_outlier$Gas, start = c(yr1, q1), frequency = 4)
+
+dc <- decompose(g_ts, type = "multiplicative")
+
+g_sa <- dc$x / dc$seasonal
+
+plot(g_sa, type = "l")
+
+```
+Adding 300 to a random point (point 10 in this case) severely alters the seasonal graph. Because it is now such a major outlier, the rest of the seasonally-altered data seems constant by comparison.
+
+
+### f)
+
+```{r 9f}
+gas_outlier_early <- gas %>%
+  mutate(Gas = if_else(row_number() == 2, Gas + 300, Gas))
+
+yr1 <- as.integer(substr(as.character(gas_outlier_early$Quarter[1]), 1, 4))
+q1  <- as.integer(sub(".*Q", "", as.character(gas_outlier_early$Quarter[1])))
+g_ts <- ts(gas_outlier_early$Gas, start = c(yr1, q1), frequency = 4)
+
+dc <- decompose(g_ts, type = "multiplicative")
+
+g_sa <- dc$x / dc$seasonal
+
+plot(g_sa, type = "l")
+```
+
+```{r 9f2}
+gas_outlier_late <- gas %>%
+  mutate(Gas = if_else(row_number() == 19, Gas + 300, Gas))
+
+yr1 <- as.integer(substr(as.character(gas_outlier_late$Quarter[1]), 1, 4))
+q1  <- as.integer(sub(".*Q", "", as.character(gas_outlier_late$Quarter[1])))
+g_ts <- ts(gas_outlier_late$Gas, start = c(yr1, q1), frequency = 4)
+
+dc <- decompose(g_ts, type = "multiplicative")
+
+g_sa <- dc$x / dc$seasonal
+
+plot(g_sa, type = "l")
+```
+
+In both cases, the unaltered data appears to be constant. This is the same affect as in part e.
+
+## 3.7.8
+
+```{r 10a}
+## 2.10.7 Code
+
+set.seed(205259899)
+myseries <- aus_retail |>
+  filter(`Series ID` == sample(aus_retail$`Series ID`, 1))
+
+ts_turn <- ts(
+  myseries$Turnover,
+  start = c(lubridate::year(min(myseries$Month)),
+            lubridate::month(min(myseries$Month))),
+  frequency = 12
+)
+
+library(seasonal)
+
+m <- seas(ts_turn, x11 = "")  
+
+plot(m)                        
+```
+
+The X-11 adjustment doesn't seem to reveal too many outliers, but it does smooth the curve and help adjust for season-to-season ambiguity. 
+
+

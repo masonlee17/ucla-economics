@@ -1,0 +1,444 @@
+---
+title: "Econ103L Project 2"
+author: "Mason Lee (205259899), Alex Prater (406233218), Kalani Leibow (806230755), Fahad Malik (506282901)"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+```{r library}
+library(Lahman)
+library(tidyverse)
+library(ggplot2)
+library(car)
+library(MASS)
+```
+
+```{r data}
+data(Pitching)
+
+head(Pitching)
+
+data(pitchingLabels)
+
+pitchingLabels
+```
+
+```{r dataset}
+Pitching_full <- Pitching
+
+Pitching_full <- Pitching_full %>% 
+  filter(GS > 0, IPouts > 100, yearID > 1999, W > 0) %>%
+  mutate(SOrate = SO / IPouts, HRper9 = HR * 27 / IPouts, OutRate = BFP / IPouts)
+
+head(Pitching_full)
+Pitching_data <- na.omit(Pitching_full)
+Pitching_data <- Pitching_data[-c(1, 2, 3, 4, 5)]
+
+head(Pitching_data)
+```
+
+```{r borutatest}
+library(Boruta)
+
+response_variable <- "W"
+
+predictors <- setdiff(names(Pitching_data), response_variable)
+
+boruta_formula <- as.formula(paste(response_variable, "~ ."))
+
+boruta_result <- Boruta(boruta_formula, data = Pitching_data, doTrace = 2)
+
+boruta_result
+```
+
+```{r boruta_analysis}
+attribute_stats <- attStats(boruta_result)
+top_5_attributes <- attribute_stats[order(-attribute_stats$meanImp), ]
+top_5_attributes
+```
+
+**Part 1 Variable Selection**
+
+**Objective:** We have created a model that attempts to predict the number of wins a baseball pitcher gets. We want to address the influential predictors and factors that can contribute to a pitcher winning a game. 
+
+**Predicted Variable: Wins (W)**
+
+-   This metric is counted based on whether the team a pitcher is on is winning the game when the pitcher exits the game and then goes on to win the game. Specifically, the pitcher has to exit the game after the 5th inning, and there cannot be a lead change after the pitcher exits. We used pitcher data from the years 2000-2024.
+
+**Source:** Lahman Baseball Database - <http://seanlahman.com/> 
+
+**Best Predictors from Boruta Test:**
+
+-   Losses (L): A pitcher's loss is counted similarly to a win, with all the same rules applied. Instead of a pitcher exiting the game after the 5th inning with no lead change, their team must be losing with no further lead change for a pitcher to gain a loss.
+
+-   Earned Run Average (ERA): This measures the number of earned runs a pitcher allows per nine innings pitched. To calculate ERA, divide the number of earned runs allowed by the number of pitched innings, then multiply by nine. An earned run is a run that scores without the benefit of an error or a passed ball.
+
+-   Strikeouts (SO): An out is called when a batter accumulates three strikes.
+
+-   Batting Average Against (BAOpp): This is the rate at which a batter gets a hit against a pitcher.
+
+-   Out Rate (OutRate): This is the rate at which a pitcher gets a batter out.
+
+**Factor Variables from Stepwise Regression:**
+
+**League ID:** Whether the player's team is in the National or American League
+
+**Team ID:** The team a player is on.
+
+Upon Running the Boruta Test, We find that 25 of our attributes are considered important, and that only one (Balks) do not contribute to wins. SV was tenative. Upon looking at the attributes ordered by mean importance, we have decided to use L, Outrate, ERA, BAOpp, and SO. We did not use IPouts because Outrate is based on IPouts so we will run into a multicollinearity problem, and we did not use BFP due to its similarity with IPouts. We also rejected GS because W + L are almost always equal to GS, and that would lead to problems later on.
+
+```{r stepregression}
+null_model <- lm(W ~ 1, data = Pitching_full)
+full_model <- lm(W ~ lgID + yearID + teamID, data = Pitching_full)
+
+forward_model <- step(null_model, direction = "forward", scope = formula(full_model), trace = 1)
+```
+
+The forward stepwise regression test shows that the lowest AIC comes from a model with yearID, teamID, and lgID. We've decided to omit yearID both due to the numerical nature of it, as well as the amount of variance from year to year in Baseball. Rule changes, talent, and developement all affect what happens in a given year, whereas there is more consistency when it comes to leauges and teams.
+
+```{r factortest}
+summary(lm(W ~ teamID, data = Pitching_full)) #R^2 0.02
+summary(lm(W ~ lgID, data = Pitching_full)) #R^2 -0.0001
+summary(lm(W ~ yearID, data = Pitching_full))
+
+```
+
+Upon looking at our Datasets three factor variables, we have decided to use lgID and teamID. Neither have strong R\^2 values, but the third factor, yearID, may work better as a discrete variable due to its counting nature.
+
+## Part 2
+
+```{r fivenum}
+fivenum(Pitching_data$L)
+fivenum(Pitching_data$ERA)
+fivenum(Pitching_data$BAOpp)
+fivenum(Pitching_data$SO)
+fivenum(Pitching_data$OutRate)
+fivenum(Pitching_data$W)
+```
+
+```{r histograms}
+hist(Pitching_data$L, breaks = 18)
+hist(Pitching_data$ERA, breaks = "scott")
+hist(Pitching_data$OutRate, breaks = "scott")
+hist(Pitching_data$BAOpp, breaks = "scott")
+hist(Pitching_data$SO, breaks = "scott")
+hist(Pitching_data$W, breaks = 18)
+```
+
+```{r boxplots}
+boxplot(Pitching_data$L)
+boxplot(Pitching_data$ERA)
+boxplot(Pitching_data$OutRate)
+boxplot(Pitching_data$BAOpp)
+boxplot(Pitching_data$SO)
+boxplot(Pitching_data$W)
+
+```
+
+```{r qqplots}
+qqplot(Pitching_data$L, Pitching_data$W)
+qqplot(Pitching_data$ERA, Pitching_data$W)
+qqplot(Pitching_data$BAOpp, Pitching_data$W)
+qqplot(Pitching_data$SO, Pitching_data$W)
+qqplot(Pitching_data$OutRate, Pitching_data$W)
+
+```
+
+```{r scatters}
+ggplot(Pitching_full, aes(x = ERA, y = W)) +
+  geom_point() +
+  geom_jitter()
+
+ggplot(Pitching_full, aes(x = BAOpp, y = W)) +
+  geom_point() +
+  geom_jitter()
+
+ggplot(Pitching_full, aes(x = SO, y = W)) +
+  geom_point() +
+  geom_jitter()
+
+ggplot(Pitching_full, aes(x = L, y = W)) +
+  geom_point() +
+  geom_jitter()
+
+ggplot(Pitching_full, aes(x = OutRate, y = W)) +
+  geom_point() +
+  geom_jitter()
+
+```
+
+# Transformation Checks
+
+```{r boxcox}
+model_ERA <- lm(W ~ ERA, data = Pitching_full)
+boxcox(model_ERA) 
+
+model_L <- lm(W ~ L, data = Pitching_full)
+boxcox(model_L) 
+
+model_BAOpp <- lm(W ~ BAOpp, data = Pitching_full)
+boxcox(model_BAOpp)
+
+model_SO <- lm(W ~ SO, data = Pitching_full)
+boxcox(model_SO)
+
+model_OutRate <- lm(W ~ OutRate, data = Pitching_full)
+boxcox(model_OutRate)
+
+
+```
+
+According to the BoxCox tests, each variable has a lambda between 0 and 0.5, meaning a small transformation may be necessary. The following tests are going to decide which transformations, if any, are required.
+
+```{r ERA transformation}
+summary(lm(Pitching_data$W ~ (Pitching_data$ERA))) #R^2 0.1857
+summary(lm(Pitching_data$W ~ exp(Pitching_data$ERA))) #R^2 0.02095
+summary(lm(Pitching_data$W ~ sqrt(Pitching_data$ERA))) #R^2 0.1789
+summary(lm(Pitching_data$W ~ log(Pitching_data$ERA))) #R^2 0.1656
+```
+
+```{r SO transformation}
+summary(lm(Pitching_data$W ~ (Pitching_data$SO))) #R^2 0.6603
+summary(lm(Pitching_data$W ~ exp(Pitching_data$SO))) #R^2 0.001547
+summary(lm(Pitching_data$W ~ sqrt(Pitching_data$SO))) #R^2 0.6608
+summary(lm(Pitching_data$W ~ log(Pitching_data$SO))) #R^2 0.6193
+```
+
+```{r BAOpp transformation}
+summary(lm(Pitching_data$W ~ (Pitching_data$BAOpp))) #R^2 0.08372
+summary(lm(Pitching_data$W ~ exp(Pitching_data$BAOpp))) #R^2 0.08586
+summary(lm(Pitching_data$W ~ sqrt(Pitching_data$BAOpp))) #R^2 0.07904
+summary(lm(Pitching_data$W ~ log(Pitching_data$BAOpp))) #R^2 0.07389
+```
+
+```{r OutRate transformation}
+summary(lm(Pitching_data$W ~ (Pitching_data$OutRate))) #R^2 0.1824
+summary(lm(Pitching_data$W ~ exp(Pitching_data$OutRate))) #R^2 0.1835
+summary(lm(Pitching_data$W ~ sqrt(Pitching_data$OutRate))) #R^2 0.1816
+summary(lm(Pitching_data$W ~ log(Pitching_data$OutRate))) #R^2 0.1807
+```
+
+```{r L transformation}
+summary(lm(Pitching_data$W ~ (Pitching_data$L))) #R^2 0.2123
+summary(lm(Pitching_data$W ~ exp(Pitching_data$L))) #R^2 0.0001282
+summary(lm(Pitching_data$W ~ sqrt(Pitching_data$L))) #R^2 0.2209
+#summary(lm(Pitching_data$W ~ log(Pitching_data$L))) No R^2 because log(0)
+```
+
+```{r densityplots}
+densityPlot(Pitching_full$ERA) #Best Visually and Best R^2
+densityPlot(exp(Pitching_full$ERA))
+densityPlot(sqrt(Pitching_full$ERA)) 
+densityPlot(log(Pitching_full$ERA))
+
+densityPlot(Pitching_full$SO) 
+densityPlot(exp(Pitching_full$SO))
+densityPlot(sqrt(Pitching_full$SO)) #Best Visually, Best R^2
+densityPlot(log(Pitching_full$SO))
+
+densityPlot(Pitching_full$BAOpp) 
+densityPlot(exp(Pitching_full$BAOpp)) #Best Visually, Best R^2
+densityPlot(sqrt(Pitching_full$BAOpp)) 
+densityPlot(log(Pitching_full$BAOpp))
+
+densityPlot(Pitching_full$OutRate) 
+densityPlot(exp(Pitching_full$OutRate))
+densityPlot(sqrt(Pitching_full$OutRate)) #Best Visually, Comparable R^2
+densityPlot(log(Pitching_full$OutRate))
+
+densityPlot(Pitching_full$L) #Best Visually, Comparable R^2 (Use This One)
+densityPlot(exp(Pitching_full$ERA))
+densityPlot(sqrt(Pitching_full$L)) #Best R^2
+```
+
+**Histogram Comments:** Losses, strikeouts, and wins are all right skewed, while batting average against, earned run average, and out rate appear to be more normally distributed.
+
+**Box Plots:** the box plots highlight the outliers and skewness in the variables earned run average, out rate, batting average against, and wins. On the other hand, the box plot of the strike out data highlights its nearly perfect normal distribution.
+
+**Density Plots:** the density plots tell a similar story and allow us to test different transformations on the data. For batting average against, an exponential transformation is the best both visually and given its R\^2 value. This transformation makes it slightly better than without.
+
+Using a square root transformation on losses makes the data slightly better in terms of visual appeal. However, the data is still quite ugly and not normally distributed.
+
+**Scatter Plot:** The scatter plots reveal clear relationships between key variables and wins. ERA shows a strong negative linear relationship, where lower ERA values correspond to more wins, supporting its economic relevance. SO exhibits a positive linear trend, indicating that pitchers with more strikeouts tend to secure more wins. BAOpp demonstrates a negative trend, with lower values correlating to higher wins, while Out Rate shows a positive relationship, suggesting that pitchers who generate more outs are more likely to achieve wins. These trends align with economic theory and further validate the inclusion of these variables in the model.
+
+**Transformation Insights:** The density plots highlight the need for transformations to improve data normality and model accuracy. A square root transformation on ERA is optimal both visually and in terms of R\^2, making it a reliable predictor. For SO, the square root transformation also performs best, normalizing the data effectively and enhancing visual appeal. An exponential transformation is most suitable for BAOpp, slightly improving normality and its R\^2 value compared to the untransformed data. Although a square root transformation is applied to losses, the data remains skewed, making it challenging to achieve normality.
+
+**Comments on outliers:** The box plots and scatter plots identify significant outliers in the data. For wins, pitchers with over 20 wins represent rare performances that may disproportionately influence model results. Similarly, extremely low ERA values, such as those below 1, reflect elite outliers and could skew the analysis. Decisions regarding these outliers, whether to exclude, retain, or transform them, are critical to maintaining model integrity and accuracy.
+
+## Model Building
+
+```{r candidate model}
+
+model_candidate <-lm(W ~ lgID + teamID + L + exp(BAOpp) + sqrt(SO) + sqrt(OutRate) + ERA, data = Pitching_full)
+summary(model_candidate) #R^2 0.7049
+```
+
+I chose this as the candidate model because it incorporates the two factor variables from the above R\^2 test as well as the five variables given by the Boruta test. I also added in the transformations I found to be most efficient.
+
+```{r multicollinearity test (vif)}
+vif(model_candidate)
+```
+
+The VIF test above, once adjusted for DF due to the large number of factors, shows that there is no serious multicollinearity issues in our model as each value is between 1 and 10.
+
+```{r multicollinearity matrix}
+cor_matrix <- cor(Pitching_full[, c("SO", "BAOpp", "OutRate", "ERA", "L")])
+cor_matrix
+```
+
+The only possibly problematic correlation found in the matrix is between ERA and OutRate (0.83), so we will check models without both of them, but generally a correlation under 0.9 is considered usable
+
+```{r misspecification}
+#install.packages("lmtest")
+library(lmtest)
+
+resettest(model_candidate)
+```
+
+The p-value of the RESET test suggests that our model is incorrect, and that we either have irrelevant terms or are excluding relevant terms. It is entirely possible that there are multiple unobserved/omitted variables as there are many factors that play into how a pitcher wins a game. The main factor that was omitted is how well a team plays on offense. These omitted variables could include things like team batting average, runs, etc.
+
+```{r model without BAOpp}
+model2 <- lm(W ~ lgID + teamID + L + exp(BAOpp) + sqrt(SO) +  ERA, data = Pitching_full)
+
+resettest(model2)
+```
+
+```{r model without Factors}
+model3 <-lm(W ~ L + exp(BAOpp) + sqrt(SO) + sqrt(OutRate) + ERA, data = Pitching_full)
+
+resettest(model2)
+```
+
+```{r residuals}
+plot(fitted(model_candidate), residuals(model_candidate))
+abline(h = 0, col = "red")
+
+plot(fitted(model2), residuals(model2))
+abline(h = 0, col = "red")
+
+plot(fitted(model3), residuals(model3))
+abline(h = 0, col = "red")
+
+```
+
+```{r cooks}
+plot(cooks.distance(model_candidate))
+plot(cooks.distance(model2))
+plot(cooks.distance(model3))
+
+```
+
+```{r qqplots for models}
+qqnorm(residuals(model_candidate))
+qqline(residuals(model_candidate), col = "red")
+
+qqnorm(residuals(model2))
+qqline(residuals(model2), col = "red")
+
+qqnorm(residuals(model3))
+qqline(residuals(model3), col = "red")
+```
+
+```{r AIC,BIC}
+AIC(model_candidate)
+BIC(model_candidate)
+
+AIC(model2)
+BIC(model2)
+
+AIC(model3)
+BIC(model3)
+```
+
+These tests show that our candidate model is still the best we have, as each of them have about the same RESET values and the AIC is lowest. Although the BIC in model3 is lower, this has to do with the stronger penalty for more variables in BIC, and model3 removes 2 factors. Since the factors being removed doesn't have much of an effect on other aspects of the model, I am relying more on AIC than BIC.
+
+```{r residualplots}
+
+```
+
+```{r bootstrapped candidate}
+library(boot)
+
+model_candidate_boot <- Boot(model_candidate, R=1000)
+
+summary(model_candidate_boot)
+confint(model_candidate_boot)
+hist(model_candidate_boot)
+```
+
+```{r bootstrapped model2}
+
+model2_boot <- Boot(model2, R=1000)
+
+summary(model2_boot)
+confint(model2_boot)
+hist(model2_boot)
+```
+
+```{r bootstrapped model3}
+
+model3_boot <- Boot(model3, R=1000)
+
+summary(model3_boot)
+confint(model3_boot)
+hist(model3_boot)
+```
+
+```{r}
+
+#install.packages("tseries")
+library(tseries)
+
+jarque.bera.test(residuals(model_candidate))
+jarque.bera.test(residuals(model2))
+jarque.bera.test(residuals(model3))
+```
+
+Based on the above findings, model2 and our candidate model are equally good, but still aren't following a normal distribution. Given results in prior tests, our candidate model is still best, but could benefit from some revisions.
+
+```{r}
+model4 <-lm(W ~  teamID + exp(BAOpp) + sqrt(SO) + sqrt(OutRate) + ERA, data = Pitching_full)
+
+summary(model4)
+```
+
+Upon looking at the summary of our candidate model, we removed L and lgID as they were the least relevant.
+
+```{r model4 comp}
+resettest(model4)
+resettest(model_candidate)
+
+AIC(model4)
+AIC(model_candidate)
+
+jarque.bera.test(residuals(model4))
+jarque.bera.test(residuals(model_candidate))
+```
+
+```{r model4boot}
+model4_boot <- Boot(model4, R=1000)
+
+summary(model4_boot)
+confint(model4_boot)
+hist(model4_boot)
+```
+
+```{r model4 graphs}
+plot(fitted(model4), residuals(model4))
+abline(h = 0, col = "red")
+
+plot(cooks.distance(model4))
+
+qqnorm(residuals(model4))
+qqline(residuals(model4), col = "red")
+```
+
+After examining model4, it appears that it is very equal to our candidate model. The AIC(model4) is slightly lower, but the jb test yields a higher value with equal p values. That being said, because it has 2 less variables, we consider it to be a simpler way to account for the variance in the Wins statistic, and therefore a better model.
+
+model4 effectively captures the key predictors of wins, emphasizing the combined influence of batting average against, strikeouts, out rate, and ERA. Economic insights suggest that improving a pitcher\'s earned run average and strikeout performance while minimizing inefficiencies are critical strategies for success. The exclusion of interaction terms simplifies the model without sacrificing predictive performance. This model provides valuable insights for understanding the determinants of wins and offers a strong foundation for further refinement.

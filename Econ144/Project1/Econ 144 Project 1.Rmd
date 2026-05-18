@@ -1,0 +1,228 @@
+---
+title: 'Econ 144: Project 1'
+author: "Eli Motzkin, Mason Lee"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+### Packages
+
+
+```{r packages}
+library(readr) ## reading in data
+library(ggplot2) ## graphing
+library(patchwork) ## displays multiple ggplots in one window
+```
+
+### Data
+
+```{r}
+data <- read_csv("australia_gdp.csv")
+```
+
+# Part 1: Introduction
+
+```{r intro}
+head(data)
+```
+
+For this project, we will be using a FRED dataset that includes quarterly data on the Real Residential Home Prices in Australia. The data is normalized to Q1 of 2010, which equals 100, and the data is not yet seasonally adjusted. The first observation was taken in Q1 of 1970, and the most recent was released on September 25 of this year (Q3). There are 222 observations in total, and each obs has a date and a real home price figure.
+
+Being a first world country in a thriving economy, we expect home prices to steadily be increasing over time, but don't have a great idea of how seasonality will impact sales. We know that home buyers have purchasing preferences in America (less popular to buy a home in winter, for example), but due to their opposite seasons, this trend may not hold in Australia. 
+
+
+# Part 2: Results
+
+## 1
+
+### a)
+
+```{r a}
+ggplot(data, aes(x = observation_date, y = QAUR628BIS)) +
+  geom_line(linewidth = 0.8) + ## aesthetic preference 
+  geom_hline(yintercept = 100, linetype = "dashed", color = "red") + ##not necessary but added to show baselevel
+  labs( ## titles
+    title = "Time Series Graph of Australian Real Residential Purchase Prices",
+    x = "Time (Quarterly)",
+    y = "Real Purchase Price"
+  ) +
+  scale_x_date(date_breaks = "5 years", date_labels = "%Y") + ## aesthetic preference 
+  theme_minimal(base_size = 12) ## aesthetic preference 
+
+```
+
+The above graph is a simple time series plot, with a red dashed line at y = 100 to show the level to which the rest of the data is normalized (Q1 2010).
+
+### b)
+
+This data is not covariance stationary. For a graph to be covariance stationary, it needs to exhibit constant mean, variance and autocovariance (covariance only caused by lag) over time. Due to the upward trending nature of this graph, the mean isn't constant, and therefore the graph isn't covariance stationary. 
+
+### c)
+
+```{r c}
+y <- data$QAUR628BIS ## renaming for convenience
+acf(y, lag.max = 40, main = "ACF") ## base r acf plot
+pacf(y, lag.max = 40, main = "PACF") ## base r pacf plot
+```
+ACF: The ACF plot shows strong correlations up to (and presumably past) lag 40. A typical ACF plot would exhibit some correlation in the first few lags but then would typically fall below the dotted blue line. Since this does not occur in the data, it may prove useful to take the log of our data (which tends to make it more stationary) and recalculate the ACF plot.
+
+PACF: Once the linearity affects were removed from the ACF plot, the steady decline in correlation went away and was replaced with one very strong spike after lag 1. The rest of the lags never cross the blue significance line, but they do move in a sin wave esque pattern, which may suggest a small seasonal or year-to-year correlation. Removing seasonality may make the PACF and the ACF plots behave more in line with expected plots.
+
+### d) 
+
+```{r d}
+t <- seq_along(y) ## added for the linear trend, so that we can relate real price to quarter, not date
+
+m1 <- lm(y ~ t) ## linear regression
+m2 <- lm(log(y) ~ t) ## exponential (nonlinear) regression
+
+df <- data.frame(t = t, y = y) ## puts the y and t variables into one dataframe for graphing purposes
+df$fit_lin <- fitted(m1) ## generates predicted data from models
+df$fit_exp <- exp(fitted(m2))  
+
+p_lin <- ggplot(df, aes(t, y)) +
+  geom_line() +
+  geom_line(aes(y = fit_lin), linewidth = 1, color = "red") +
+  labs(title = "Linear Fit",
+       x = "Time (Quarterly)", y = "Real Purchase Price") + ## aesthetic preference 
+  theme_minimal(base_size = 12) + ## aesthetic preference 
+  theme(plot.title = element_text(hjust = 0.5)) ## centered title
+
+p_exp <- ggplot(df, aes(t, y)) +
+  geom_line() +
+  geom_line(aes(y = fit_exp), linewidth = 1, color = "red") +
+  labs(title = "Exponential Fit",
+       x = "Time (Quarterly)", y = "Real Purchase Price")  + ## aesthetic preference 
+  theme_minimal(base_size = 12) + ## aesthetic preference 
+  theme(plot.title = element_text(hjust = 0.5)) ## centered title
+
+(p_lin | p_exp) ## patchwork way to display multiple ggplots
+```
+
+### e)
+
+```{r e}
+dfm1 <- data.frame(fit = fitted(m1), res = resid(m1))
+dfm2 <- data.frame(fit = fitted(m2), res = resid(m2))
+
+res_lin <- ggplot(dfm1, aes(x = fit, y = res)) +
+  geom_point(alpha = 0.6) + ## opacity
+  geom_hline(yintercept = 0, color = "red") + ## middle line
+  labs(x = "Fitted values (level)", y = "Residuals (level)",
+       title = "Residuals vs Fitted: Linear") + ## aesthetic preference 
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5)) ## centered title
+
+res_exp <- ggplot(dfm2, aes(x = fit, y = res)) +
+  geom_point(alpha = 0.6) + ## opacity
+  geom_hline(yintercept = 0, color = "red") + ## middle line
+  labs(x = "Fitted values (level)", y = "Residuals (level)",
+       title = "Residuals vs Fitted: Exponential") + ## aesthetic preference 
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5)) ## centered title
+
+(res_lin | res_exp) # patchwork
+
+```
+
+The above residual vs fitted values plots show that there are underlying issues in our models. You would hope to see scattered randomness in these plots, but instead see clear patterns. The linear model's residuals are clearly "V" shaped, implying that a simple linear regression will significantly over or under predict based on the time of the data. The exponential model (right hand side) isn't much better. The first half of the graph looks much like the linear model. The second half consistently under predicts the data. Although the visual fit was promising, these graphs shows that our models have underlying issues that need to be addressed. 
+
+
+### f)
+
+```{r f}
+hist_lin <- ggplot(dfm1, aes(x = res)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30, fill = "white", color = "red", linewidth = 0.2) + ## aesthetic
+  labs(title = "Residuals: Linear",
+       x = "Residuals (Linear)", y = "Density") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5)) ## centered title
+
+hist_exp <- ggplot(dfm2, aes(x = res)) +
+  geom_histogram(aes(y = after_stat(density)),
+                 bins = 30, fill = "white", color = "red", linewidth = 0.2) + ## aesthetic
+  labs(title = "Residuals: Log-linear (Exponential)",
+       x = "Residuals (Exponential)", y = "Density") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5)) ## centered title
+
+(hist_lin | hist_exp) 
+```
+These histograms show a different view of the residuals than the residuals vs fitted plots. They tend to be centered around 0, and the Exponential model residuals have a bell curve esque feel to them, which is exactly what we want to see. The Linear model residuals are less promising, with large spikes on the tails. These graphs confirm that the linear model is not a great fit and strengthens the argument in favor of the exponential graph despite a less-than-perfect set of residuals.
+
+
+### g)
+
+```{r g}
+summary(m1)
+summary(m2)
+```
+
+R-squared: The R-squared statistic, which generally shows how variance is explained by a model, is valued between 0 and 1, with 1 being a perfect, error-free fit and 0 meaning no correlation at all. The Linear model gives an R-squared value of 0.8835, which is incredibly high, but less than the exponential model, which has an R-squared of 0.9294. By this metric, the exponential model should better explain variance than the linear model.
+
+T-statistic: The t-stat, which shows the probability that of a non-zero trend, is high in both models (Linear: 40.952, Exponential: 53.96). In both cases, the quarter (t) is very significant to the Real Home Price in Australia, but odds of being able to reject the slope = 0 null hypothesis are higher in the second model.
+
+F-Statistic: This stat measures trends, where the higher values allow you to reject a no-trend null hypothesis. In our case, both models allow you to reject the null hypothesis and claim that there exists some relationship between our predictor and Real Home Price in Australia. The F-stat is higher in the exponential model (2912 vs 1677 on the same degrees of freedom), but at these levels the actual number does not make a huge statistical difference.
+
+
+### h)
+
+```{r h}
+AIC(m1)
+AIC(m2)
+
+BIC(m1)
+BIC(m2)
+```
+When it comes to AIC and BIC, lower is typically better. In our case, the AIC and BIC figures both consistently show that m2 is the better model. This backs up our graphical and statistical findings from the previous sections.
+
+
+### i)
+
+```{r}
+h <- 12 ## future periods (measured in quarters)
+t_future <- max(t) + seq_len(h) ##adding in data
+
+
+pred  <- predict(m2, newdata = data.frame(t = t_future),
+                 interval = "prediction", level = 0.95) ## predicting new points
+fc <- data.frame( ## new data
+  t     = t_future,
+  mean  = exp(pred[, "fit"]), ## expected value
+  lower = exp(pred[, "lwr"]), ##lower bound
+  upper = exp(pred[, "upr"]) ## upper bound
+)
+
+
+
+ggplot() +
+  geom_line(data = df, aes(t, y)) + ## plotting the historical data
+  geom_ribbon(data = fc, aes(t, ymin = lower, ymax = upper), fill = "red", alpha = 0.15) + ## adding the bounds
+  geom_line(data = fc, aes(t, mean), color = "red", linewidth = 1) + ## predicted data
+  labs(title = "Log-Linear 12-Quarter Forecast",
+       x = "Time (Quarterly)", y = "Real Purchase Price") +
+  theme_minimal(base_size = 12) +
+  theme(plot.title = element_text(hjust = 0.5)) ## centered title
+  
+```
+
+The above plot shows the quarterly time series data extrapolated 12 extra quarters based on m2 (lm(log(y) ~ t)). The red shaded portion is the certainty bounds, with the middle red bar showing the predicted values of the next 12 quarters.
+
+
+## 2.
+
+
+### Conclusions and Future Work
+
+### References
+
+All data was sourced from FRED financial data, specifically from this link: https://fred.stlouisfed.org/series/QAUR628BIS
+
+

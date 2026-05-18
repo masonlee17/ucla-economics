@@ -1,0 +1,119 @@
+---
+title: "Project 2 - Econ 144"
+author: "Eli Motzkin, Mason Lee"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+# Intro
+
+For this project, we will be taking a look at the 30 year expected inflation rate. The data was collected monthly starting in the 80s, but we will only be using data from the past 15 years in order to stay consistent with the other dataset (30 year breakeven inflation rate) for the purpose of the VAR. The 30 year inflation rate is a FRED estimate for the average inflation rate across the next 30 years, and features trend, seasonality, and cycles.
+
+# Results
+
+## Packages
+
+```{r packages}
+library(readr)
+library(lattice)
+library(foreign)
+library(MASS)
+library(car)
+require(stats)
+require(stats4)
+library(KernSmooth)
+library(fastICA)
+library(cluster)
+library(leaps)
+library(mgcv)
+library(rpart)
+library(pan)
+library(mgcv)
+library(DAAG)
+library("TTR")
+library(tis)
+require("datasets")
+require(graphics)
+library(forecast)
+require(astsa)
+library(RColorBrewer)
+library(plotrix)
+library(tsibble)
+library(ggplot2)
+library(tidyr)
+library(USgas)
+library(fpp3)
+```
+
+## Data
+
+```{r data}
+data <- read_csv("30expected.csv")
+head(data)
+```
+
+## Part A: Time Series Plot
+
+```{r a}
+y <- ts(
+  data$EXPINF30YR,
+  start = c(year(data$observation_date[1]), month(data$observation_date[1])),
+  frequency = 12
+)
+
+plot(y)
+acf(y)
+pacf(y)
+```
+Above, we see a time series plot of the 30 year expected inflation rate. It shows a slight upward trend as the market recovered from the 2008 recession, and plenty of seasonality. There are also longer term fluctuations (cycles) present.
+
+The ACF and PACF plot are a textbook example of an AR(1) pattern. There is 1 strong PACF spike, and the ACF plot shows a slow regression towards 0. This means that 30 year projections are heavily dependent on the most recent months projection.
+
+## Part B: STL Decomposition
+
+```{r b}
+fit <- stl(y, s.window = "periodic", robust = TRUE)
+plot(fit)
+```
+The STL decomposition confirms that this dataset has trend, seasonality, and cycles. The seasonal decomp shows a steady, rythmic pattern, and the remainder shows that there are cycles present. The trend is slight, but definitely present. The data starts on a slow downward trend and then rebounds before crashing in 2020 (Covid-19). After the pandemic, the trend returned to its upward climb.
+
+
+## Part C: Model Fitting
+
+```{r c}
+t  <- seq_along(y)
+Sd <- seasonaldummy(y)
+
+fit <- Arima(y, order = c(1,0,0), seasonal = c(0,0,0),
+               xreg = cbind(trend = t, Sd),
+               include.mean = FALSE)
+
+summary(fit)
+```
+
+The above model fits 12 dummy seasonal variables, trend, and AR(1) cyclical behavior together into a model called "fit". AR(1) comes from order = c(1,0,0) in the Arima function and was chosen by the ACF and PACF spikes. The seasonal trend (s = 12) is due to how the data was collected. The deterministic trend component (t) is also included in the model and shows a general positive correlation. This oversimplifies things given the time series graph, but does add to the model. 
+
+The AIC of the model is -513 and BIC is -467, which doesn't tell us much yet but will be helpful when we start comparing different models.
+
+
+## Part E: Residuals vs. Fitted
+
+```{r e}
+fitted <- fitted(fit)
+resid <- residuals(fit)
+
+plot(fitted, resid,
+     xlab = "Fitted values",
+     ylab = "Residuals",
+     main = "Residuals vs Fitted (Part C model)")
+abline(h = 0, lty = 2)
+```
+
+The Residual vs. Fitted plot shows a very random collection of points, which is exactly what we hope to see. There is some heteroskedasticity, which isn't ideal, but it is clear that our model is on the right path.
+

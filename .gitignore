@@ -1,0 +1,12 @@
+*_cache/
+*_files/
+.Rproj.user/
+*.RData
+*.Rhistory
+.Rapp.history
+*.Rproj
+.DS_Store
+*.o
+*.so
+Econ104/all_car_adverts.csv
+Econ104/all_car_adverts.csv

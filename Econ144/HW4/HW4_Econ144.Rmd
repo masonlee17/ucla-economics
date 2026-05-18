@@ -1,0 +1,770 @@
+---
+title: "HW5 - Econ 144"
+author: "Mason Lee"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache  = TRUE)
+```
+
+## Packages
+
+```{r packages}
+library(readr)
+library(lattice)
+library(foreign)
+library(MASS)
+library(car)
+require(stats)
+require(stats4)
+library(KernSmooth)
+library(fastICA)
+library(cluster)
+library(leaps)
+library(mgcv)
+library(rpart)
+library(pan)
+library(mgcv)
+library(DAAG)
+library("TTR")
+library(tis)
+require("datasets")
+require(graphics)
+library(forecast)
+require(astsa)
+library(RColorBrewer)
+library(plotrix)
+library(tsibble)
+library(ggplot2)
+library(tidyr)
+library(USgas)
+library(fpp3)
+```
+
+
+# Textbook A: Forecasting for Economics and Business
+
+## Data
+
+```{r data11}
+fm <- read.csv("fmhpi_master_file.csv")
+head(fm)
+table(fm$GEO_Type)
+msa <- subset(fm, GEO_Type == "CBSA")
+MSA1_name <- "Oxnard-Thousand Oaks-Ventura CA"
+MSA2_name <- "Los Angeles-Long Beach-Anaheim CA"
+
+msa1 <- subset(msa, GEO_Name == MSA1_name)
+msa2 <- subset(msa, GEO_Name == MSA2_name)
+
+msa1$Date <- as.Date(paste(msa1$Year, msa1$Month, "01", sep = "-"))
+msa2$Date <- as.Date(paste(msa2$Year, msa2$Month, "01", sep = "-"))
+
+msa1 <- msa1[order(msa1$Date), ]
+msa2 <- msa2[order(msa2$Date), ]
+
+head(msa1)
+head(msa2)
+```
+
+## 11.1 
+
+```{r 11.1}
+dat <- merge(
+  data.frame(
+    Date = msa1$Date,
+    g1   = c(NA, 100 * diff(log(msa1$Index_SA)))  # Oxnard growth
+  ),
+  data.frame(
+    Date = msa2$Date,
+    g2   = c(NA, 100 * diff(log(msa2$Index_SA)))  # LA growth
+  ),
+  by = "Date"
+)
+dat <- dat[complete.cases(dat), ]
+
+summary(dat)
+cor(dat$g1, dat$g2)
+
+dat$Month <- yearmonth(dat$Date)
+dat_ts <- as_tsibble(dat, index = Month)
+
+fit <- model(
+  dat_ts,
+  var = VAR(vars(g1, g2) ~ AR(p = 1:6), ic = "bic")
+)
+
+report(fit)   
+
+```
+
+The two samples used are the MSA rates in Oxnard and LA. They both have 609 observations, which were taken monthly since 1975.
+
+Looking at the above data (descriptive and forecasting), we can see that the growth rate in MSA1 (Oxnard) is 0.52%, very similar to that of MSA2 (LA), which is 0.53%. They two sets are very correlated (0.96). 
+
+Using the fpp3 package's var() function, chosen using BIC to keep models simple, we find that a var(6) model leads to the most accurate results. BIC is minimized at p=6 which is why var(6) was chosen. In this model, almost all of the lag coefficients are significant, implying a strong correlation between prior lags and current lags. There are also clear ties between Oxnard rates and LA rates.
+
+
+## 11.2
+
+```{r 11.2}
+p <- 6
+n <- nrow(dat)
+idx <- (p + 1):n
+
+Y1 <- dat$g1[idx]  # Oxnard_t
+Y2 <- dat$g2[idx]  # LA_t
+
+X <- NULL
+for (i in 1:p) {
+  X <- cbind(X, dat$g1[idx - i], dat$g2[idx - i])
+}
+X <- as.data.frame(X)
+names(X) <- unlist(lapply(1:p, function(i) c(paste0("g1_L", i), paste0("g2_L", i))))
+
+df <- data.frame(Y1 = Y1, Y2 = Y2, X)
+
+fit1_u <- lm(Y1 ~ ., data = df) 
+fit2_u <- lm(Y2 ~ ., data = df)  
+
+cols_g1 <- grep("^g1_L", names(df), value = TRUE)
+cols_g2 <- grep("^g2_L", names(df), value = TRUE)
+
+fit1_r <- lm(Y1 ~ ., data = df[, c("Y1", cols_g1), drop = FALSE]) 
+fit2_r <- lm(Y2 ~ ., data = df[, c("Y2", cols_g2), drop = FALSE])  
+
+gc_g2_to_g1 <- anova(fit1_r, fit1_u)  
+gc_g1_to_g2 <- anova(fit2_r, fit2_u)  
+
+gc_g2_to_g1
+gc_g1_to_g2
+
+```
+
+Looking at the Granger Causality results, we see that regressing y2 on y1 and y1 on y2 both yeild significant p values (sub 5%). This means that LA Granger-causes Oxnard MSA and Oxnard Granger-causes LA MSA. In both cases, we can reject the "no cause" null hypothesis.
+
+
+## 11.3
+
+```{r 11.3}
+h <- 36
+future <- new_data(dat_ts, n = h)
+
+irf_g1 <- IRF(fit, new_data = future, impulse = "g1")
+
+irf_g2 <- IRF(fit, new_data = future, impulse = "g2")
+
+
+
+autoplot(irf_g1, .vars = g1) +
+  labs(
+    title = "Response of Oxnard (g1) to an Oxnard shock (g1)",
+    x = "Months after shock",
+    y = "Growth response (percentage points)"
+  )
+
+autoplot(irf_g1, .vars = g2) +
+  labs(
+    title = "Response of LA (g2) to an Oxnard shock (g1)",
+    x = "Months after shock",
+    y = "Growth response (percentage points)"
+  )
+
+autoplot(irf_g2, .vars = g1) +
+  labs(
+    title = "Response of Oxnard (g1) to an LA shock (g2)",
+    x = "Months after shock",
+    y = "Growth response (percentage points)"
+  )
+
+autoplot(irf_g2, .vars = g2) +
+  labs(
+    title = "Response of LA (g2) to an LA shock (g2)",
+    x = "Months after shock",
+    y = "Growth response (percentage points)"
+  )
+```
+
+The above graphs show that in forecasted data, shocks are always positive. LA shocks are more positive than Oxnard shocks, which tend to lead to an immediate downturn before spiking 6 months later, but shocks in both cities lead to overall positive effects roughly 6-12 months out. The resulting growth rates return to 0 after 2 years.
+
+Given my prior knowledge of the regions (growing up in LA and then moving to over the summer Oxnard), these results seem in line. I was surprised to see such similar growth rates since 1975, but the effects of shocks make sense to me. When LA grows, competing markets also grow, and vice versa.
+
+The graph shows that order does not affect my results. Although the graphs change a bit, general trends and spikes stay exactly the same.
+
+
+# Textbook C: Hyndman's Book (2nd Ed)
+
+Sourced from https://otexts.com/fpp2/
+
+## 7.7
+
+```{r 7.7}
+library(fma) 
+head(eggs)
+
+autoplot(eggs)
+
+h <- 100        
+
+fit1 <- holt(eggs, h = h)
+
+fit2 <- holt(eggs, damped = TRUE, h = h)
+
+lambda <- BoxCox.lambda(eggs)
+fit3 <- holt(eggs, lambda = lambda, h = h)
+
+fit4 <- holt(eggs, damped = TRUE, lambda = lambda, h = h)
+
+autoplot(fit1)
+autoplot(fit2)
+autoplot(fit3)
+autoplot(fit4)
+
+rmse1 <- sqrt(mean(residuals(fit1)^2, na.rm = TRUE))
+rmse2 <- sqrt(mean(residuals(fit2)^2, na.rm = TRUE))
+rmse3 <- sqrt(mean(residuals(fit3)^2, na.rm = TRUE))
+rmse4 <- sqrt(mean(residuals(fit4)^2, na.rm = TRUE))
+
+c(no_trans       = rmse1,
+  damped         = rmse2,
+  boxcox         = rmse3,
+  boxcox_damped  = rmse4)
+```
+
+Looking at the 4 models, it looks like the box-cox method and the box-cox with a dampening affect have much lower RMSEs than the first two models. The box-cox (no dampening) is slightly lower, so fit3 is the best model by RMSE, but the difference is negligable so you can't say for certain that fit3 is the best predictive model.
+
+
+## 7.8
+
+### 2.3 Data
+
+```{r 7.8 data}
+retaildata <- readxl::read_excel("retail.xlsx", skip=1)
+
+y <- ts(retaildata[,"A3349562T"],
+  frequency=12, start=c(1982,4))
+
+autoplot(y)
+```
+
+### a)
+
+Multiplicative seasonality is necessary due to the size of the swings. They tend to be bigger when the series level is higher and as time goes by. Since seasonal trends aren't constant, we cannot use additive seasonality here and must use multiplicative.
+
+
+### b)
+
+```{r 7.8.b}
+fit_hw  <- hw(y, seasonal = "multiplicative")                 # normal trend
+fit_hwd <- hw(y, seasonal = "multiplicative", damped = TRUE)  # damped trend
+
+autoplot(fit_hw)
+autoplot(fit_hwd)
+```
+
+Using a Damped Holt-Winters forecast slightly decreases the forecasted results.
+
+
+### c)
+
+```{r 7.8.c}
+rmse_hw  <- sqrt(mean(residuals(fit_hw)^2,  na.rm = TRUE))
+rmse_hwd <- sqrt(mean(residuals(fit_hwd)^2, na.rm = TRUE))
+
+rmse_hw
+rmse_hwd
+```
+
+The Damped method has a slightly lower RMSE, so by that metric we prefer the damped method of forecasting.
+
+
+### d)
+
+```{r 7.8.d}
+checkresiduals(fit_hwd)
+```
+
+The residuals visually appear to be white noise. The time series of residuals is completely random, the residuals are normally distributed, and the ACF plot does not show a clear pattern.
+
+The tells	Ljung-Box test tells a diffent story. The p value is well below 0.05, which tells us there still might be some autocorrelation in the model.
+
+
+### e)
+
+```{r 7.8.e}
+y_train <- window(y, end   = c(2010, 12))
+y_test  <- window(y, start = c(2011, 1))
+
+h_test <- length(y_test)
+
+fc_best <- hw(y_train, seasonal = "multiplicative", damped = TRUE, h = h_test)
+fc_snaive <- snaive(y_train, h = h_test)
+
+rmse_best_test   <- sqrt(mean((y_test - fc_best$mean)^2))
+rmse_snaive_test <- sqrt(mean((y_test - fc_snaive$mean)^2))
+
+rmse_best_test
+rmse_snaive_test
+
+```
+
+Looking at the RMSE from our best model against the naive forecasting method used in 3.7, we prefer our best model. The RMSE is almost 10% lower.
+
+
+## 7.9
+
+```{r 7.9}
+y_train <- window(y, end   = c(2010, 12))
+y_test  <- window(y, start = c(2011, 1))
+h_test  <- length(y_test)
+
+lambda <- BoxCox.lambda(y_train)
+
+fit_stl_ets <- stlm(y_train,
+                    lambda   = lambda,      
+                    s.window = "periodic",  
+                    method   = "ets")    
+
+fc_stl_ets <- forecast(fit_stl_ets, h = h_test)
+plot(fc_stl_ets)
+
+rmse_stl_ets_test <- sqrt(mean((y_test - fc_stl_ets$mean)^2))
+rmse_stl_ets_test
+```
+
+The RMSE value from the STL decomp applied to the Box-Cox transformed series is lower than the naive method but still not as low as the best method from 7.8.
+
+
+
+## 7.11
+
+### Data
+```{r 7.11.data}
+library(fpp2)
+head(visitors)
+```
+
+
+### a)
+
+```{r 7.11.a}
+autoplot(visitors) +
+  ggtitle("Monthly Australian short-term overseas visitors") +
+  xlab("Year") + ylab("Thousands")
+```
+
+This series has an upwards trend and a consistent seasonal pattern. At a glance, there doesn't appear to be a strong cyclical pattern.
+
+
+### b)
+
+```{r 7.11.b}
+y <- visitors
+
+y_train <- window(y, end   = c(2003, 4))
+y_test  <- window(y, start = c(2003, 5))
+h_test  <- length(y_test)
+
+fit_hw_mul <- hw(y_train, seasonal = "multiplicative", h = h_test)
+
+autoplot(fit_hw_mul) +
+  autolayer(y_test, series = "Test data") +
+  ggtitle("HW multiplicative forecast vs test set")
+
+rmse_hw_mul <- sqrt(mean((y_test - fit_hw_mul$mean)^2))
+rmse_hw_mul
+```
+
+The above plot shows our forecasted data (blue) is consistently underpredicting the actual data (red). The RMSE is 83.2, which doesn't mean much on its own but will help compare this forecast to other forecasts.
+
+
+### c)
+
+The seasonal effects seem to get larger (more stretched out on graph) as the trend increases, implying a multiplicative pattern over a seasonal pattern. It is not as clear as with 7.8.a, but it is multiplicative nevertheless.
+
+
+### d)
+
+```{r 7.11.d}
+y <- visitors
+y_train <- window(y, end   = c(2003, 4))
+y_test  <- window(y, start = c(2003, 5))
+h_test  <- length(y_test)
+
+lambda <- BoxCox.lambda(y_train)
+
+## (i)
+fit_ets   <- ets(y_train)
+fc_ets    <- forecast(fit_ets, h = h_test)
+
+## (ii)
+fit_ets_box <- ets(y_train, model = "AAA", lambda = lambda, biasadj = TRUE)
+fc_ets_box  <- forecast(fit_ets_box, h = h_test)
+
+## (iii)
+fc_snaive <- snaive(y_train, h = h_test)
+
+## (iv)
+fit_stl_ets <- stlm(y_train,
+                    lambda   = lambda,
+                    s.window = "periodic",
+                    method   = "ets")
+fc_stl_ets  <- forecast(fit_stl_ets, h = h_test)
+
+rmse_ets      <- sqrt(mean((y_test - fc_ets$mean)^2))
+rmse_ets_box  <- sqrt(mean((y_test - fc_ets_box$mean)^2))
+rmse_snaive   <- sqrt(mean((y_test - fc_snaive$mean)^2))
+rmse_stl_ets  <- sqrt(mean((y_test - fc_stl_ets$mean)^2))
+
+c(ETS              = rmse_ets,
+  ETS_BoxCox_AAA   = rmse_ets_box,
+  Seasonal_naive   = rmse_snaive,
+  STL_ETS_BoxCox   = rmse_stl_ets)
+
+```
+
+### e)
+
+```{r 7.11.e}
+checkresiduals(fc_snaive)
+```
+
+The seasonal naive method has the lowest RMSE, making it the best model. The residuals are not white noise, and seem to suggest some added cyclical trends that weren't picked up. The residuals plot isn't random, the ACF has spikes (maybe an AR(4) or AR(8) would help), and the residuals barplot is skewed. 
+
+### f)
+
+```{r 7.11.f}
+library(forecast)
+
+y <- visitors
+
+lambda <- BoxCox.lambda(y)
+
+f_ets <- function(y, h) {
+  forecast(ets(y), h = h)
+}
+
+f_ets_box <- function(y, h) {
+  forecast(ets(y, model = "AAA", lambda = lambda, biasadj = TRUE), h = h)
+}
+
+f_snaive <- function(y, h) {
+  snaive(y, h = h)
+}
+
+f_stl_ets <- function(y, h) {
+  forecast(
+    stlm(y, lambda = lambda, s.window = "periodic", method = "ets"),
+    h = h
+  )
+}
+
+cv_ets      <- tsCV(y, f_ets,      h = 1)
+cv_ets_box  <- tsCV(y, f_ets_box,  h = 1)
+cv_snaive   <- tsCV(y, f_snaive,   h = 1)
+cv_stl_ets  <- tsCV(y, f_stl_ets,  h = 1)
+
+rmse_cv_ets      <- sqrt(mean(cv_ets^2,      na.rm = TRUE))
+rmse_cv_ets_box  <- sqrt(mean(cv_ets_box^2,  na.rm = TRUE))
+rmse_cv_snaive   <- sqrt(mean(cv_snaive^2,   na.rm = TRUE))
+rmse_cv_stl_ets  <- sqrt(mean(cv_stl_ets^2,  na.rm = TRUE))
+
+c(
+  CV_ETS            = rmse_cv_ets,
+  CV_ETS_BoxCox_AAA = rmse_cv_ets_box,
+  CV_Seasonal_naive = rmse_cv_snaive,
+  CV_STL_ETS_BoxCox = rmse_cv_stl_ets
+)
+```
+
+In this test, the ETS, ETS Box-Cox, and the STL ETS Box-Cox all have very similarly low RMSE values. STL ETS Box-Cox is lowest, followed by ETS and then ETS Box-Cox. The Seasonal naive method is now the worst one by far.
+
+
+## 8.13
+
+### Data
+
+```{r 8.13.data}
+library(fpp2)
+head(qcement)
+```
+
+
+### a)
+
+```{r 8.13.a}
+autoplot(qcement)
+
+lambda_qc <- BoxCox.lambda(qcement)
+lambda_qc
+```
+
+Because the variance changes with each level, a Box-Cox transformation is appropriate. This is further supported by lambda being fairly close to 0 (-0.43).
+
+### b)
+
+```{r 8.13.b}
+qclog <- BoxCox(qcement, lambda_qc)
+autoplot(qclog)
+
+ggtsdisplay(qclog)                       # raw
+ggtsdisplay(diff(qclog))                 # non-seasonal diff
+ggtsdisplay(diff(qclog, lag = 4))        # seasonal diff
+ggtsdisplay(diff(diff(qclog), lag = 4))  # both
+```
+The data is not stationary at first, but once you apply seasonal and non-seasonal differences, the dataset is properly cleaned and stationary.
+
+
+### c)
+
+```{r 8.13.c}
+library(forecast)
+
+fit1 <- Arima(qclog, order = c(0,1,1),
+              seasonal = c(0,1,1))
+
+fit2 <- Arima(qclog, order = c(1,1,1),
+              seasonal = c(0,1,1))
+
+fit3 <- Arima(qclog, order = c(0,1,2),
+              seasonal = c(0,1,1))
+
+AIC(fit1)
+AIC(fit2)
+AIC(fit3)
+
+```
+
+When it comes to AIC, you always want to choose the lowest value. In our case, that leads us to pick fit2, which is an ARIMA(1,1,1)(0,1,1)[4] model.
+
+
+### d)
+
+```{r 8.13.d}
+best_fit <- fit2   
+
+summary(best_fit)
+checkresiduals(best_fit)
+
+fit_new <- Arima(qclog, order = c(2,1,1),
+              seasonal = c(0,1,1))     # ARIMA(2,1,1)(0,1,1)[4]
+
+summary(fit_new)
+checkresiduals(fit_new)   # p-value should be larger; residuals closer to white noise
+
+## Compare AICs
+AIC(best_fit); AIC(fit_new)
+```
+The estimated coefficients for this model are -0.5946 (AR(1)), 0.3772 (MA(1)), and -0.8855 (SMA(1)). Looking at the residuals, the time series is almost compelely white noise shaped, the residuals are normal, and the ACF has a few tiny spikes but seems to indicate that all seasonal paterns have been accounted for. 
+
+The Ljung-Box test has a p value of 0.02, which means we reject the null hypothesis. There is still some autocorrelation in our model.
+
+Trying out a new Arima model doesn't make our model better by AIC.
+
+
+### e)
+
+```{r 8.13.e}
+fc_arima <- forecast(best_fit, h = 24)
+
+autoplot(fc_arima) +
+  ggtitle("qcement: ARIMA forecasts (24 months)") +
+  ylab("Log cement production (transformed)")
+```
+The next 24 observations continue the pattern, showing additive seasonality and a slight upwards trend. The prediction interval widens, which means were are less certain of the prediction the further away we are.
+
+
+### f)
+
+```{r 8.13.f}
+fit_ets <- ets(qclog)
+summary(fit_ets)
+
+fc_ets <- forecast(fit_ets, h = 24)
+
+autoplot(fc_ets) +
+  ggtitle("qcement: ETS forecasts (24 months)") +
+  ylab("Log cement production (transformed)")
+
+```
+The ETS forecast is very similar to the ARIMA forecast. The interval seems to be the same, but the trend stops increasing, making me favor the ARIMA forecast. It seems unrealistic to assume that the data will continue at a horizontal rate rather than the rate we had observed historically.
+
+
+## 8.18
+
+### a)
+
+#### Quandl Error
+
+```{r data, error=TRUE}
+library(Quandl)
+
+y <- Quandl("QUANTCHA/VOL", api_key="VS9q-JDA9qo4DgRTrik4", type="ts")
+```
+
+Quandl is not working correctly and thinks I am trying to scrape data, so I'm going to use a built in dataset for 8.18. I hope that's ok.
+
+
+#### Data
+
+```{r 8.18.data}
+library(fpp2)
+y <- uschange[,"Consumption"]
+
+head(y)
+```
+
+
+### b)
+
+```{r 8.18.b}
+autoplot(y) +
+  ggtitle("US consumption growth (quarterly)") +
+  xlab("Year") + ylab("Percent change")
+
+boxplot(y)
+
+ggtsdisplay(y)
+```
+The data has a slight downwards trend and some seasonality but doesn't seem to have many long term cycles. Based on the ACF and PACF spikes, I'd estimate an ARIMA model of ARIMA(3,0,3).
+
+
+### c)
+
+```{r 8.18.c}
+fit_arima <- Arima(y, order = c(3, 0, 3))
+
+summary(fit_arima)
+
+checkresiduals(fit_arima)
+```
+
+Looking at the Ljung-Box test p value, which is over 5%, we can't rule out the null hypothesis and declare autocorrelation. The residuals confirm this. They are normally distributed, seem to folow a white noise pattern in the time series plot, and don't have any patterns in the ACF.
+
+
+### d)
+
+```{r 8.18.d}
+h <- 4 * frequency(y)
+fc_arima <- forecast(fit_arima, h = h)
+autoplot(fc_arima)
+```
+The forecast is not very useful. It is almost completely devoid of trend or seasonality.
+
+### e)
+
+```{r 8.18.e}
+fit_ets <- ets(y)
+summary(fit_ets)
+```
+Based on this output, we need an ETS(A,N,N) with alpha = 0.3298
+
+### f)
+
+```{r 8.18.f}
+checkresiduals(fit_ets)
+```
+In the ets summary, we see that the p value for the	Ljung-Box test is less than 0.05, so we can reject the null hypothesis and claim that the model doesn't fully account for the autocorrelations. The residual time series is pretty random, but the histogram is not very bellcurve shaped and the ACF plot has a few early spikes.
+
+
+### g)
+
+```{r 8.18.g}
+fc_ets <- forecast(fit_ets, h = h)
+
+autoplot(fc_ets) +
+  ggtitle("ETS forecast: US consumption growth") +
+  ylab("Percent change")
+```
+
+The ETS forcast is completely horizontal and unconvincing. The CI bounds increase, but the actual forecast doesn't tell us anything.
+
+### h)
+
+```{r 8.18.h}
+rmse_arima <- sqrt(mean(residuals(fit_arima)^2, na.rm = TRUE))
+rmse_ets   <- sqrt(mean(residuals(fit_ets)^2,   na.rm = TRUE))
+rmse_arima
+rmse_ets
+```
+
+
+Based on the RMSE values, we prefer the ARIMA model. It better accounts for the autocorrelations than the ETS (not by much).
+
+## 12.4 Method on New Data
+
+### Data
+
+```{r datafinal}
+btc <- read.csv("bitcoin.csv", sep = ";")
+
+btc$Date <- as.Date(sub("T.*", "", btc$timeOpen))
+btc <- btc[order(btc$Date), ]
+
+y <- ts(btc$close, frequency = 7)
+
+h      <- 30
+train  <- head(y, length(y) - h)
+test   <- tail(y, h)
+
+head(y)
+```
+
+
+### Code
+
+```{r 1}
+ETS   <- forecast(ets(train), h = h)
+
+ARIMA <- forecast(
+  auto.arima(train, lambda = 0, biasadj = TRUE),
+  h = h
+)
+
+STL   <- stlf(
+  train,
+  lambda   = 0,
+  h        = h,
+  biasadj  = TRUE
+)
+
+NNAR  <- forecast(nnetar(train), h = h)
+
+TBATS <- forecast(tbats(train, biasadj = TRUE), h = h)
+
+Combination <- (ETS[["mean"]] +
+                ARIMA[["mean"]] +
+                STL[["mean"]] +
+                NNAR[["mean"]] +
+                TBATS[["mean"]]) / 5
+
+autoplot(y) +
+  autolayer(ETS,   series = "ETS",   PI = FALSE) +
+  autolayer(ARIMA, series = "ARIMA", PI = FALSE) +
+  autolayer(STL,   series = "STL",   PI = FALSE) +
+  autolayer(NNAR,  series = "NNAR",  PI = FALSE) +
+  autolayer(TBATS, series = "TBATS", PI = FALSE) +
+  autolayer(Combination, series = "Combination") +
+  xlab("Week") + ylab("Closing Price") +
+  ggtitle("Bitcoin Closing Prices Collected Daily for Past 365 Days") +
+  guides(colour = guide_legend(title = "Method"))
+
+rmse_tab <- c(
+  ETS         = accuracy(ETS,   y)["Test set", "RMSE"],
+  ARIMA       = accuracy(ARIMA, y)["Test set", "RMSE"],
+  STL_ETS     = accuracy(STL,   y)["Test set", "RMSE"],
+  NNAR        = accuracy(NNAR,  y)["Test set", "RMSE"],
+  TBATS       = accuracy(TBATS, y)["Test set", "RMSE"],
+  Combination = accuracy(Combination, y)["Test set", "RMSE"]
+)
+rmse_tab
+
+```
+
+### Comments
+
+Running the same procedure as 12.4 on Bitcoin data, we see that none of the models accurately predict the recent crypto collapse. I used 11 months as training data and 1 month as test data. The past month happens to have been very negative for bitcoin, but every model predicted stability or an increase in closing price. The closest was the STL plot, which had bitcoin declining more than the other models. 

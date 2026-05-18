@@ -1,0 +1,194 @@
+---
+title: "HW5 - Econ 144"
+author: "Mason Lee"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache  = TRUE)
+```
+
+## Packages
+
+```{r packages}
+library(readr)
+library(lattice)
+library(foreign)
+library(MASS)
+library(car)
+require(stats)
+require(stats4)
+library(KernSmooth)
+library(fastICA)
+library(cluster)
+library(leaps)
+library(mgcv)
+library(rpart)
+library(pan)
+library(mgcv)
+library(DAAG)
+library("TTR")
+library(tis)
+require("datasets")
+require(graphics)
+library(forecast)
+require(astsa)
+library(RColorBrewer)
+library(plotrix)
+library(tsibble)
+library(ggplot2)
+library(tidyr)
+library(USgas)
+library(fpp3)
+```
+
+
+# Textbook A: Forecasting for Economics and Business
+
+## Data
+
+```{r data}
+fm <- read.csv("fmhpi_master_file.csv")
+head(fm)
+table(fm$GEO_Type)
+msa <- subset(fm, GEO_Type == "CBSA")
+MSA1_name <- "Oxnard-Thousand Oaks-Ventura CA"
+MSA2_name <- "Los Angeles-Long Beach-Anaheim CA"
+
+msa1 <- subset(msa, GEO_Name == MSA1_name)
+msa2 <- subset(msa, GEO_Name == MSA2_name)
+
+msa1$Date <- as.Date(paste(msa1$Year, msa1$Month, "01", sep = "-"))
+msa2$Date <- as.Date(paste(msa2$Year, msa2$Month, "01", sep = "-"))
+
+msa1 <- msa1[order(msa1$Date), ]
+msa2 <- msa2[order(msa2$Date), ]
+
+head(msa1)
+head(msa2)
+```
+
+## 11.1 
+
+```{r 11.1}
+dat <- merge(
+  data.frame(
+    Date = msa1$Date,
+    g1   = c(NA, 100 * diff(log(msa1$Index_SA)))  # Oxnard growth
+  ),
+  data.frame(
+    Date = msa2$Date,
+    g2   = c(NA, 100 * diff(log(msa2$Index_SA)))  # LA growth
+  ),
+  by = "Date"
+)
+dat <- dat[complete.cases(dat), ]
+
+summary(dat)
+cor(dat$g1, dat$g2)
+
+dat$Month <- yearmonth(dat$Date)
+dat_ts <- as_tsibble(dat, index = Month)
+
+fit <- model(
+  dat_ts,
+  var = VAR(vars(g1, g2) ~ AR(p = 1:6), ic = "bic")
+)
+
+report(fit)   
+
+```
+
+The two samples used are the MSA rates in Oxnard and LA. They both have 609 observations, which were taken monthly since 1975.
+
+Looking at the above data (descriptive and forecasting), we can see that the growth rate in MSA1 (Oxnard) is 0.52%, very similar to that of MSA2 (LA), which is 0.53%. They two sets are very correlated (0.96). 
+
+Using the fpp3 package's var() function, chosen using BIC to keep models simple, we find that a var(6) model leads to the most accurate results. BIC is minimized at p=6 which is why var(6) was chosen. In this model, almost all of the lag coefficients are significant, implying a strong correlation between prior lags and current lags. There are also clear ties between Oxnard rates and LA rates.
+
+
+## 11.2
+
+```{r 11.2}
+p <- 6
+n <- nrow(dat)
+idx <- (p + 1):n
+
+Y1 <- dat$g1[idx]  # Oxnard_t
+Y2 <- dat$g2[idx]  # LA_t
+
+X <- NULL
+for (i in 1:p) {
+  X <- cbind(X, dat$g1[idx - i], dat$g2[idx - i])
+}
+X <- as.data.frame(X)
+names(X) <- unlist(lapply(1:p, function(i) c(paste0("g1_L", i), paste0("g2_L", i))))
+
+df <- data.frame(Y1 = Y1, Y2 = Y2, X)
+
+fit1_u <- lm(Y1 ~ ., data = df) 
+fit2_u <- lm(Y2 ~ ., data = df)  
+
+cols_g1 <- grep("^g1_L", names(df), value = TRUE)
+cols_g2 <- grep("^g2_L", names(df), value = TRUE)
+
+fit1_r <- lm(Y1 ~ ., data = df[, c("Y1", cols_g1), drop = FALSE]) 
+fit2_r <- lm(Y2 ~ ., data = df[, c("Y2", cols_g2), drop = FALSE])  
+
+gc_g2_to_g1 <- anova(fit1_r, fit1_u)  
+gc_g1_to_g2 <- anova(fit2_r, fit2_u)  
+
+gc_g2_to_g1
+gc_g1_to_g2
+
+```
+
+Looking at the Granger Causality results, we see that regressing y2 on y1 and y1 on y2 both yeild significant p values (sub 5%). This means that LA Granger-causes Oxnard MSA and Oxnard Granger-causes LA MSA. In both cases, we can reject the "no cause" null hypothesis.
+
+
+## 11.3
+
+```{r 11.3}
+h <- 36
+future <- new_data(dat_ts, n = h)
+
+irf_g1 <- IRF(fit, new_data = future, impulse = "g1")
+
+irf_g2 <- IRF(fit, new_data = future, impulse = "g2")
+
+
+
+autoplot(irf_g1, vars = vars(g1)) +
+  labs(
+    title = "Response of Oxnard (g1) to an Oxnard shock (g1)",
+    x = "Months after shock",
+    y = "Growth response (percentage points)"
+  )
+
+autoplot(irf_g1, vars = vars(g2)) +
+  labs(
+    title = "Response of LA (g2) to an Oxnard shock (g1)",
+    x = "Months after shock",
+    y = "Growth response (percentage points)"
+  )
+
+autoplot(irf_g2, vars = vars(g1)) +
+  labs(
+    title = "Response of Oxnard (g1) to an LA shock (g2)",
+    x = "Months after shock",
+    y = "Growth response (percentage points)"
+  )
+
+autoplot(irf_g2, vars = vars(g2)) +
+  labs(
+    title = "Response of LA (g2) to an LA shock (g2)",
+    x = "Months after shock",
+    y = "Growth response (percentage points)"
+  )
+```
+
+The above graphs show that in forecasted data, self shocks (LA responding to LA shock, Oxnard responding to Oxnard shock) tend to be positive roughly 6 months later before a slight dip after a year. The counter shocks have an opposite effect, leading to a negative decline followed by an upturn once the self shocks begin to self correct.
+
+Given my prior knowledge of the regions (growing up in LA and then moving to over the summer Oxnard), these results seem in line. I was surprised to see such similar growth rates since 1975, but the effects of shocks make sense to me. When LA grows, competing markets shrink, and vice versa.

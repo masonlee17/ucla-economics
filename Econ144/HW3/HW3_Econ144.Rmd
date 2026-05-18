@@ -1,0 +1,518 @@
+---
+title: "HW3 - Econ 144"
+author: "Mason Lee"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+## Packages
+
+```{r}
+library(readr)
+library(lattice)
+library(foreign)
+library(MASS)
+library(car)
+require(stats)
+require(stats4)
+library(KernSmooth)
+library(fastICA)
+library(cluster)
+library(leaps)
+library(mgcv)
+library(rpart)
+library(pan)
+library(mgcv)
+library(DAAG)
+library("TTR")
+library(tis)
+require("datasets")
+require(graphics)
+library(forecast)
+require(astsa)
+library(RColorBrewer)
+library(plotrix)
+library(tsibble)
+library(ggplot2)
+library(tidyr)
+library(USgas)
+library(fpp3)
+```
+
+
+# Textbook A
+
+## Chapter 7
+
+### 7.2
+
+```{r a}
+data7.2 <- read_csv("72data.csv")
+
+head(data7.2)
+```
+```{r b}
+data7.2$date <- as.Date(data7.2$date, format = "%m/%d/%y")
+data7.2 <- data7.2[order(data7.2$date), ]
+
+start_year  <- as.numeric(format(data7.2$date[1], "%Y"))
+start_month <- as.numeric(format(data7.2$date[1], "%m"))
+data7.2 <- ts(data7.2$unemployed, start = c(start_year, start_month), frequency = 12)
+
+plot.ts(data7.2,
+        main = "Unemployed People (Count)",
+        ylab = "Thousands", xlab = "Year")
+
+data7.2_dif <- diff(data7.2)
+
+par(mfrow = c(2,2))
+plot(data7.2,   main = "Level series", ylab = "")
+acf(data7.2,    lag.max = 36, main = "ACF (level)")
+plot(data7.2_dif, main = "First difference", ylab = "")
+acf(data7.2_dif,  lag.max = 36, main = "ACF (1st diff)")
+par(mfrow = c(1,1))
+
+par(mfrow = c(1,2))
+acf(data7.2_dif,  lag.max = 36, main = "ACF of Dif series")
+pacf(data7.2_dif, lag.max = 36, main = "PACF of Dif series")
+par(mfrow = c(1,1))
+
+fit_ar1 <- arima(data7.2, order = c(1,1,0))
+fit_ar2 <- arima(data7.2, order = c(2,1,0))
+fit_ma1 <- arima(data7.2, order = c(0,1,1))
+
+AIC(fit_ar1, fit_ar2, fit_ma1)
+summary(fit_ar2) 
+```
+
+Based on the above results, I do think an autoregressive process can effectively explain the dependence of the series. The slow decaying nature of the ACF plots signal a non-stationary plot, and the PACF plot cutting off early is an indication of an AR model (not MA). Based on the AIC values, an arima(2, 1, 0) model is most appropriate for modeling the unemployment time series.
+
+
+
+### 7.5
+
+```{r c}
+set.seed(817)
+
+sim_ar2 <- function(phi1, phi2, c = 1, n = 600, burn = 200) {
+  e <- rnorm(n + burn, 0, 1)
+  y <- numeric(n + burn)
+  for (t in 3:(n + burn)) {
+    y[t] <- c + phi1 * y[t-1] + phi2 * y[t-2] + e[t]
+  }
+  ts(y[(burn+1):(n+burn)])
+}
+
+y_pos <- sim_ar2( 0.3,  0.7) 
+y_neg <- sim_ar2(-0.3, -0.7)  
+
+par(mfrow = c(2,1), mar = c(4,4,4,1))
+plot.ts(y_pos, main = "AR(2): 1 + 0.3 Y_t1 + 0.7 Y_t2 + e_t", ylab = "y_t", xlab = "")
+plot.ts(y_neg, main = "AR(2): 1 - 0.3 Y_t1 - 0.7 Y_t2 + e_t", ylab = "y_t", xlab = "time")
+
+par(mfrow = c(1,2), mar = c(4,4,4,1))
+acf(y_pos, lag.max = 36, main = "Pos")
+acf(y_neg, lag.max = 36, main = "Neg")
+par(mfrow = c(1,1))
+```
+Looking at the graphs of the above simulations, it appears that the one with positive coefficients (called Pos), is much more smooth than the one with negative coefficients (Neg). In the AR(2) models, Pos has a very steady, upwards trajectory with slight bumps but no clear seasonal patterns. Neg, on the other hand, appears to have much more of a seasonal trend. It is far from smooth, but the spiky pattern is apparent. It isn't random enough to be a random walk, and there is no strong upwards trend. ACF plots reveal a similar pattern. Pos has a smooth decline, and Neg is much more chaotic. This tells us that Pos is non-stationary and Neg is stationary.
+
+
+
+### 7.6
+
+```{r d}
+data7.6 <- read_csv("76data.csv")
+head(data7.6)
+
+data7.6$date <- as.Date(data7.6$date, format = "%m/%d/%y")
+data7.6 <- data7.6[order(data7.6$date), ]
+
+h_infl <- na.omit(data7.6$housingInflation)
+t_infl <- na.omit(data7.6$transportationInflation)
+
+start_year_h <- as.numeric(format(data7.6$date[which(!is.na(data7.6$housingInflation))[1]], "%Y"))
+start_year_t <- as.numeric(format(data7.6$date[which(!is.na(data7.6$transportationInflation))[1]], "%Y"))
+
+h_ts <- ts(h_infl, start = start_year_h, frequency = 1)
+t_ts <- ts(t_infl, start = start_year_t, frequency = 1)
+
+par(mfrow = c(2,3), mar = c(4,4,4,1))
+plot.ts(h_ts, main = "Housing inflation", ylab = "%", xlab = "")
+acf(h_ts, lag.max = 20, main = "ACF: housing")
+pacf(h_ts, lag.max = 20, main = "PACF: housing")
+
+plot.ts(t_ts, main = "Transportation inflation", ylab = "%", xlab = "Year")
+acf(t_ts, lag.max = 20, main = "ACF: transportation")
+pacf(t_ts, lag.max = 20, main = "PACF: transportation")
+par(mfrow = c(1,1))
+
+```
+Housing: AR(2) seems appropriate in this case. The ACF plot has a very steady decay, and when that is paired with a PACF that has a strong spike at 1 (and in this case, negative spike at 2), an AR model is usually a good forecaster.
+
+Transportation: Here, the ACF and PACF both decline quickly. Each graph has a strong first spike, but none of the other lines (with the second ACF line as a small exception) cross the blue significance threshold. This indicates AR may not be the best model, and that it may be better to go with an MA or ARIMA.
+
+
+
+### 7.9
+
+```{r e}
+data7.9 <- read_csv("79data.csv")
+head(data7.9)
+
+data7.9$date <- as.Date(data7.9$date, format = "%m/%d/%y")
+data7.9 <- data7.9[order(data7.9$date), ]
+
+start_year  <- as.numeric(format(data7.9$date[1], "%Y"))
+start_month <- as.numeric(format(data7.9$date[1], "%m"))
+data7.9_ts  <- ts(data7.9$unempl_part,
+                  start = c(start_year, start_month),
+                  frequency = 12)
+
+plot.ts(data7.9_ts,
+        main = "Unemployed Looking for Part-Time Work",
+        ylab = "Thousands", xlab = "Year")
+
+data7.9_dif <- diff(data7.9_ts)
+
+par(mfrow = c(2,2))
+plot(data7.9_ts,   main = "Level series", ylab = "")
+acf (data7.9_ts,   lag.max = 36, main = "ACF (level)")
+plot(data7.9_dif,  main = "First difference", ylab = "")
+acf (data7.9_dif,  lag.max = 36, main = "ACF (1st diff)")
+par(mfrow = c(1,1))
+
+par(mfrow = c(1,2))
+acf (data7.9_dif,  lag.max = 36, main = "ACF of Dif series")
+pacf(data7.9_dif,  lag.max = 36, main = "PACF of Dif series")
+par(mfrow = c(1,1))
+
+fit_ar1 <- arima(data7.9_ts, order = c(1,1,0))  # ARIMA(1,1,0)
+fit_ar2 <- arima(data7.9_ts, order = c(2,1,0))  # ARIMA(2,1,0)
+fit_ma1 <- arima(data7.9_ts, order = c(0,1,1))  # ARIMA(0,1,1)
+
+AIC(fit_ar1, fit_ar2, fit_ma1)
+
+best <- predict(fit_ma1, n.ahead = 3)
+best_mean <- as.numeric(best$pred)
+best_se   <- as.numeric(best$se)
+best_lo   <- best_mean - 1.96 * best_se
+best_hi   <- best_mean + 1.96 * best_se
+
+plot.ts(data7.9_ts, ylab = "Thousands", xlab = "Year",
+        main = "1–3 Step Forecasts (95% Bands)")
+last_t <- time(data7.9_ts)[length(data7.9_ts)]
+next_idx <- seq(from = last_t + 1/12, by = 1/12, length.out = 3)
+points(next_idx, best_mean, pch = 19, col = "red")
+arrows(next_idx, best_lo, next_idx, best_hi, angle = 90, code = 3, length = 0.05, col = "red")
+
+k <- 12
+y_full <- data7.9_ts
+y_tr   <- window(y_full, end = time(y_full)[length(y_full)-k])
+y_te   <- window(y_full, start = time(y_full)[length(y_full)-k+1])
+
+fit_ma1_tr <- arima(y_tr, order = c(0,1,1))
+fc_te <- predict(fit_ma1_tr, n.ahead = length(y_te))
+errs <- as.numeric(y_te) - as.numeric(fc_te$pred)
+
+data.frame(step = 1:length(errs),
+           actual = as.numeric(y_te),
+           fcast  = round(as.numeric(fc_te$pred),2),
+           error  = round(errs,2))
+c(MAE = mean(abs(errs)), RMSE = sqrt(mean(errs^2)))
+
+mean(errs)
+```
+
+I found MA(1) to be the best model due to its relatively low AIC value. Plotting its 95% CI, we see that using an MA(1) model, we predict that the graph will level out for the next 3 months. The errors tell a slightly different story. Our constant prediction proved very inconsistent when compared to the actual data, and tended to underpredict 70% of the time. Although average doesn't tell you much when it comes to predicting seasonal patterns due to the increasing nature of the data, we were off by -16 on average, indicating a low prediction tendancy.
+
+
+
+### 7.10
+
+```{r f}
+sim_ar3 <- function(phi1, phi2, phi3, c = 1, n = 600, burn = 200) {
+  e <- rnorm(n + burn, 0, 1)
+  y <- numeric(n + burn)
+  for (t in 4:(n + burn)) {
+    y[t] <- c + phi1*y[t-1] + phi2*y[t-2] + phi3*y[t-3] + e[t]
+  }
+  ts(y[(burn+1):(n+burn)])
+}
+
+
+phi_strong <- c(0.80, 0.15, 0.03)   ## designed to be stationary
+
+phi_low    <- c(0.20, -0.10, 0.05)  ## designed for quick decay
+
+y_strong <- sim_ar3(phi_strong[1], phi_strong[2], phi_strong[3])
+y_low    <- sim_ar3(phi_low[1],    phi_low[2],    phi_low[3])
+
+par(mfrow = c(2,1), mar = c(4,4,4,1))
+plot.ts(y_strong, main = "AR(3) – Strong persistence (0.80, 0.15, 0.03)", ylab = "y_t", xlab = "")
+plot.ts(y_low,    main = "AR(3) – Low persistence (0.20, -0.10, 0.05)",    ylab = "y_t", xlab = "time")
+
+par(mfrow = c(2,2), mar = c(4,4,4,1))
+acf (y_strong, lag.max = 36, main = "ACF: strong")
+pacf(y_strong, lag.max = 36, main = "PACF: strong")
+acf (y_low,    lag.max = 36, main = "ACF: low")
+pacf(y_low,    lag.max = 36, main = "PACF: low")
+par(mfrow = c(1,1))
+```
+Above are the two simulated AR(3) models. One was designed to be stationary due to the high sum of coefficients, and one was designed to quickly decay due to the low sum of coefficients. As we can see, the simulation is consisent with the theoretical behavior. The "strong" model has a very slowly decaying ACF, and a PACF that has a large early spike followed by mostly insignificant spikes hovering between the blue bands. The "low" model has an ACF that quickly collapses (much like the "strong" PACF), and a PACF with two large spikes followed by a jumble of insignificant lag values.
+
+
+## Chapter 8
+
+### 8.1
+
+```{r g}
+data81 <- read_csv("data81.csv")
+head(data81)
+
+y_df <- data81[, c("OBS", "SDGrowth")]
+y_df <- y_df[!is.na(y_df$SDGrowth), ]
+
+
+yr0 <- as.integer(substr(y_df$OBS[1], 1, 4))
+q0  <- as.integer(substr(y_df$OBS[1], 6, 6))
+
+
+y <- ts(y_df$SDGrowth, start = c(yr0, q0), frequency = 4)
+
+par(mfrow = c(1,1), mar = c(4,4,3,1))
+plot.ts(y, main = "SDGrowth (quarterly)", ylab = "growth", xlab = "time")
+
+
+fit_ar5 <- arima(y, order = c(5,0,0), include.mean = TRUE)
+fit_arma24 <- arima(y, order = c(2,0,4), include.mean = TRUE)
+
+AIC(fit_ar5, fit_arma24)   # model selection info
+
+h <- 8 
+
+fc_ar5     <- predict(fit_ar5,    n.ahead = h)
+fc_arma24  <- predict(fit_arma24, n.ahead = h)
+
+mk_fc_tbl <- function(fc, y) {
+  m  <- as.numeric(fc$pred)
+  se <- as.numeric(fc$se)
+  lo <- m - 1.96*se
+  hi <- m + 1.96*se
+  # future time index as ts time then map to Date-like labels for ggplot
+  t_last <- time(y)[length(y)]
+  t_seq  <- seq(from = t_last + 1/frequency(y), by = 1/frequency(y), length.out = length(m))
+  # convert to year-quarter labels
+  yr <- floor(t_seq)
+  q  <- 1 + round((t_seq - yr) * frequency(y))
+  data.frame(step = 1:length(m), year = yr, quarter = q, mean = m, lo = lo, hi = hi)
+}
+
+fc_tab_ar5    <- mk_fc_tbl(fc_ar5, y)
+fc_tab_arma24 <- mk_fc_tbl(fc_arma24, y)
+
+
+fit_ar5_f     <- forecast::Arima(y, order = c(5,0,0), include.mean = TRUE)
+fit_arma24_f  <- forecast::Arima(y, order = c(2,0,4), include.mean = TRUE)
+
+set.seed(81)
+Npaths <- 5000   # EDIT IF NEEDED
+
+sim_mat_ar5    <- replicate(Npaths, simulate(fit_ar5_f,    nsim = h, future = TRUE))
+sim_mat_arma24 <- replicate(Npaths, simulate(fit_arma24_f, nsim = h, future = TRUE))
+
+pick_h <- intersect(c(1,4,8), 1:h)
+
+dens_df <- do.call(rbind, lapply(pick_h, function(k) {
+  rbind(
+    data.frame(model = "AR(5)",     h = k, value = sim_mat_ar5[k, ]),
+    data.frame(model = "ARMA(2,4)", h = k, value = sim_mat_arma24[k, ])
+  )
+}))
+
+hist_df <- data.frame(
+  t = seq_along(y),
+  value = as.numeric(y)
+)
+
+t_hist_last <- nrow(hist_df)
+fc_tab_ar5$t  <- t_hist_last + fc_tab_ar5$step
+fc_tab_arma24$t <- t_hist_last + fc_tab_arma24$step
+
+ggplot() +
+  geom_line(data = hist_df, aes(t, value)) +
+  geom_ribbon(data = fc_tab_ar5, aes(t, ymin = lo, ymax = hi), alpha = 0.15) +
+  geom_line  (data = fc_tab_ar5, aes(t, mean), linewidth = 0.7) +
+  geom_ribbon(data = fc_tab_arma24, aes(t, ymin = lo, ymax = hi), alpha = 0.15) +
+  geom_line  (data = fc_tab_arma24, aes(t, mean), linewidth = 0.7, linetype = "dashed") +
+  labs(title = "SDGrowth: multi-step forecasts",
+       subtitle = "Solid = AR(5), Dashed = ARMA(2,4); shaded = 95% intervals",
+       x = "time (quarters)", y = "growth") +
+  theme_minimal()
+
+ggplot(dens_df, aes(x = value, fill = model)) +
+  geom_density(alpha = 0.25, adjust = 1.0) +
+  facet_wrap(~ h, scales = "free", nrow = 1,
+             labeller = labeller(h = function(x) paste0("Horizon h=", x))) +
+  labs(title = "Density forecasts", x = "growth", y = "density") +
+  theme_minimal()
+
+comp_tab <- data.frame(
+  step = fc_tab_ar5$step,
+  ar5_mean = round(fc_tab_ar5$mean, 3),
+  ar5_lo95 = round(fc_tab_ar5$lo,   3),
+  ar5_hi95 = round(fc_tab_ar5$hi,   3),
+  arma24_mean = round(fc_tab_arma24$mean, 3),
+  arma24_lo95 = round(fc_tab_arma24$lo,   3),
+  arma24_hi95 = round(fc_tab_arma24$hi,   3)
+)
+
+comp_tab
+```
+
+Comparing the two models I forecast (AR(5) and ARIMA(2,4)) to AR(4) from 8.3, we see that there are some key differences. Although all forecast positive growth, AR(2,4) is more optimistic than AR(4), and AR(5) is a bit more pessimistic. The forecast story is generally the same, and the confidence intervals are almost identical. Regardless of your choice of model, you will get relatively indistinguishable results up to 12 periods out.
+
+### 8.2
+
+```{r h}
+data82 <- read_csv("data82.csv")
+head(data82)
+
+d <- subset(data82, !is.na(sdg), c(date, sdg))
+d$date <- as.Date(d$date, format = "%m/%d/%y")
+d <- d[order(d$date), ]
+
+start_year  <- as.numeric(format(d$date[1], "%Y"))
+start_quart <- (as.numeric(format(d$date[1], "%m")) - 1) %/% 3 + 1
+y <- ts(d$sdg, start = c(start_year, start_quart), frequency = 4)
+
+par(mar = c(4,4,4,1))
+plot.ts(y, main = "San Diego Home Price Growth (quarterly)", xlab = "time", ylab = "growth")
+
+par(mfrow = c(1,2), mar = c(4,4,4,1))
+acf (y,  lag.max = 24, main = "ACF: growth")
+pacf(y,  lag.max = 24, main = "PACF: growth")
+par(mfrow = c(1,1))
+
+fit_ar4 <- arima(y, order = c(4,0,0), include.mean = TRUE)
+resid4  <- residuals(fit_ar4)
+
+par(mfrow = c(1,2), mar = c(4,4,4,1))
+acf (resid4, lag.max = 24, main = "ACF: AR(4) residuals")
+pacf(resid4, lag.max = 24, main = "PACF: AR(4) residuals")
+par(mfrow = c(1,1))
+```
+Now that we have the full time series data plotted, we see that AR(4) still fits well. The ACF is slowly decreasing, and the PACF has spikes until lag 4 (year 1), as expected. The residuals also back up this claim, since they seem random and unbiased.
+
+### 8.5
+
+```{r i}
+data85 <- read_csv("data85.csv")
+head(data85)
+
+d <- subset(data85, !is.na(growth), c(DATE, growth))
+d$DATE <- as.Date(d$DATE, format = "%m/%d/%y")
+d <- d[order(d$DATE), ]
+start_year  <- as.numeric(format(d$DATE[1], "%Y"))
+start_quart <- (as.numeric(format(d$DATE[1], "%m")) - 1) %/% 3 + 1
+y <- ts(d$growth, start = c(start_year, start_quart), frequency = 4)
+n <- length(y)
+
+fit_ar1 <- arima(y, order = c(1,0,0), include.mean = TRUE)
+fit_ma1 <- arima(y, order = c(0,0,1), include.mean = TRUE)
+fit_arma11  <- arima(y, order = c(1,0,1), include.mean = TRUE)
+fit_arma21  <- arima(y, order = c(2,0,1), include.mean = TRUE)
+fit_arma12  <- arima(y, order = c(1,0,2), include.mean = TRUE)
+fit_arma22  <- arima(y, order = c(2,0,2), include.mean = TRUE)
+fit_ar4 <- arima(y, order = c(4,0,0), include.mean = TRUE)
+fit_ma4 <- arima(y, order = c(0,0,4), include.mean = TRUE)
+
+AIC(fit_ar1, fit_ma1, fit_arma11, fit_arma21, fit_arma12, fit_arma22, fit_ar4, fit_ma4)
+BIC(fit_ar1, fit_ma1, fit_arma11, fit_arma21, fit_arma12, fit_arma22, fit_ar4, fit_ma4)
+
+h <- 8 
+set.seed(817)
+sims <- replicate(5000, simulate(fit_ar1, nsim = h, future = TRUE))
+
+pick <- c(1,4,8)[c(1,4,8) <= h]   # horizons to show
+dens_df <- do.call(rbind, lapply(pick, function(k)
+  data.frame(h = paste0("h = ", k), value = sims[k, ])
+))
+
+ggplot(dens_df, aes(value)) +
+  geom_density(fill = "gray70", alpha = 0.35) +
+  facet_grid(rows = vars(h), scales = "free_x") +
+  labs(title = "AR(1) Density Forecasts", x = "Growth", y = "Density") +
+  theme_minimal()
+```
+
+Based on the AIC/BIC figures of a large selection of models, it seems like AR(1) is the best model for this data. Although it isn't the lowest AIC (that would be ARMA(2,2)), all of the AIC numbers are very close together and AR(1) is in the lowest figures ballpark. AR(1) has the lowest BIC, and it is by a relatively wide margin, which seems like more valuable information than AIC.
+
+The density plot, being bell shaped and symmetric, support this conclusion.
+
+
+### 8.7
+
+```{r j}
+data87 <- read_csv("data87.csv")
+head(data87)
+
+data87$OBS <- as.Date(data87$OBS, format = "%m/%d/%y")
+data87 <- data87[order(data87$OBS), ]
+
+lag1 <- function(x) c(NA, x[-length(x)])
+
+d <- subset(data87, !is.na(R_SP500_OPEN) & !is.na(R_FTSE_OPEN),
+            c(OBS, R_SP500_OPEN, R_FTSE_OPEN))
+d$SP_l1   <- lag1(d$R_SP500_OPEN)
+d$FTSE_l1 <- lag1(d$R_FTSE_OPEN)
+d <- d[complete.cases(d), ]
+
+m0 <- lm(R_SP500_OPEN ~ R_FTSE_OPEN, data = d); summary(m0)
+
+m1 <- lm(R_SP500_OPEN ~ R_FTSE_OPEN + SP_l1, data = d)
+m2 <- lm(R_SP500_OPEN ~ R_FTSE_OPEN + SP_l1 + FTSE_l1, data = d)
+anova(m1, m2)
+```
+
+Looking at the post-lag regression model, we see that there is strong correlation between FTSE and the SP500. Because British markets open, they should affect American markets, and the data supports this. Although the R^2 value of 0.27 isn't super high, our model insinuates that British markets are responsible for 27% of the variance in American markets 6 hours later.
+
+### 8.8
+
+```{r k}
+data88 <- read_csv("data88.csv")
+head(data88)
+
+data88 <- subset(data88, !is.na(usd_euro), c(DATE, usd_euro))
+data88$DATE <- as.Date(data88$DATE, format = "%m/%d/%y")
+data88 <- data88[order(data88$DATE), ]
+
+start_year  <- as.numeric(format(data88$DATE[1], "%Y"))
+start_month <- as.numeric(format(data88$DATE[1], "%m"))
+x <- ts(data88$usd_euro, start = c(start_year, start_month), frequency = 12)
+
+r <- diff(log(x)) * 100
+par(mfrow = c(2,2), mar = c(4,4,3,1))
+plot.ts(x, main = "USD per EUR (monthly level)", ylab = "USD/EUR", xlab = "time")
+plot.ts(r, main = "Monthly log-return of USD/EUR", ylab = "%", xlab = "time")
+acf (r, lag.max = 36, main = "ACF: returns")
+pacf(r, lag.max = 36, main = "PACF: returns")
+par(mfrow = c(1,1))
+
+fit_ar1    <- arima(r, order = c(1,0,0), include.mean = TRUE)
+fit_ma1    <- arima(r, order = c(0,0,1), include.mean = TRUE)
+fit_arma11 <- arima(r, order = c(1,0,1), include.mean = TRUE)
+
+AIC(fit_ar1, fit_ma1, fit_arma11)
+
+best_fit <- fit_arma11
+fc <- predict(best_fit, n.ahead = 1)
+print(fc$pred)
+```
+We can't predict next month with any accuracy, since this data ends in 2012, but we can forecast 1 month ahead. Using an ARMA(1,1) model due to the low AIC value, we expect the USD to appreciate next month (negative change) relative to the Euro. 

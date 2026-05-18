@@ -1,0 +1,550 @@
+---
+title: "HW2 Econ 144"
+author: "Mason Lee"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+```{r packages}
+library(readr)
+library(lattice)
+library(foreign)
+library(MASS)
+library(car)
+require(stats)
+require(stats4)
+library(KernSmooth)
+library(fastICA)
+library(cluster)
+library(leaps)
+library(mgcv)
+library(rpart)
+library(pan)
+library(mgcv)
+library(DAAG)
+library("TTR")
+library(tis)
+require("datasets")
+require(graphics)
+library(forecast)
+require(astsa)
+library(RColorBrewer)
+library(plotrix)
+library(tsibble)
+library(ggplot2)
+library(tidyr)
+library(USgas)
+library(fpp3)
+```
+
+
+```{r data}
+data1 <- read_csv("ch4_6-Sheet1.csv")
+
+head(data1)
+```
+
+```{r 1clean}
+data1$aligned <- c(NA, head(data1$forecast, -1))
+data1 <- data1[-1, ] 
+data1$error <- data1$actual - data1$aligned
+
+head(data1)
+```
+# Testbook A
+
+## 4.6
+
+```{r 1}
+ggplot(data1, aes(x = date)) +
+  geom_line(aes(y = actual, color = "Actual")) +
+  geom_line(aes(y = aligned, color = "Forecast (1Q ahead, aligned)"),
+            linetype = "dashed") +  
+  geom_line(aes(y = error, color = "Error"),
+            linetype = "dotted") +
+  labs(
+    title = "GDP Growth: Actual vs Offset Forecast with Error",
+    x = "Quarter",
+    y = "Percent (annualized)",
+    color = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+fivenum(data1$actual)
+var(data1$actual)
+mean(data1$actual)
+
+fivenum(data1$forecast)
+var(data1$forecast)
+mean(data1$forecast)
+
+fivenum(data1$error)
+var(data1$error)
+mean(data1$error)
+
+op <- par(mfrow = c(3, 2), mar = c(4, 4, 3, 1))
+acf(data1$actual,  main = "ACF: Actual",  xlab = "", ylab = "ACF")
+pacf(data1$actual, main = "PACF: Actual", xlab = "", ylab = "PACF")
+
+acf(data1$forecast,  main = "ACF: Forecast",  xlab = "", ylab = "ACF")
+pacf(data1$forecast, main = "PACF: Forecast", xlab = "", ylab = "PACF")
+
+acf(data1$error,  main = "ACF: Forecast Error",  xlab = "Lag", ylab = "ACF")
+pacf(data1$error, main = "PACF: Forecast Error", xlab = "Lag", ylab = "PACF")
+par(op)
+```
+In the time series graph, which features the actual percent growth plotted on top of that quarters predicted growth and their difference, we see that growth rates are relatively constant with major variance (backed up by the descriptive statistics). We also see that the error line seems relatively centered at 0, which implies no over/under prediction bias. The actual vs forecast lines are correlated but rarely overlap completely, which means the financial analysts have an idea of how the market will change but their level of certainty is low.
+
+In the ACF/PACF plots, we see that there exists time dependence in the actual and forecasted growth rates, but not in the forecast error. This is exactly what we should expect. For the "actual" ACF/PACF, we see a classic AR(1) or AR(2) plot with strong spikes at lag 1 before falling below the blue line. We also see a strong negative line at lag 12, which suggests some sort of year over year correlation. The Forecast plots also look like they could be AR(1), with a steadily declining ACF and a large early spike in the PACF. Error, on the other hand, is very messy. The ACF has one spike, but the PACF has no clear trend, suggesting noise.
+
+## 4.8
+
+```{r 2}
+t.test(data1$error, mu = 0)
+
+##lags
+
+e <- data1$error
+n <- length(e)
+
+df1 <- data.frame(
+  e_t = e[2:n],
+  L1  = e[1:(n-1)]
+)
+
+fit1  <- lm(e_t ~ L1, data = df1)
+summary(fit1)
+
+
+df2 <- data.frame(
+  e_t = e[3:n],
+  L1  = e[2:(n-1)],
+  L2  = e[1:(n-2)]
+)
+
+fit2  <- lm(e_t ~ L1 + L2, data = df2)
+summary(fit2)
+
+
+df3 <- data.frame(
+  e_t = e[4:n],
+  L1  = e[3:(n-1)],
+  L2  = e[2:(n-2)],
+  L3  = e[1:(n-3)]
+)
+
+fit3  <- lm(e_t ~ L1 + L2 + L3, data = df3)
+summary(fit3)
+
+fit3r <- lm(e_t ~ 1, data = df3)
+
+anova(fit3, fit3r)
+```
+
+I did a t-test to test what I visually stated in the prior part (E(error) = 0), and found that we cannot reject our null hypothesis, which claimed that the mean was 0 (p > 0.05). There is no statistical bias in the errors. The calculated mean of the error is 0.07, suggesting that forecasters may have under predicted growth during this time frame, but this is not statistically proven. Furthermore, 0 is included in our confidence interval, meaning our true mean being 0 is possible.
+
+Running regression models with up to three lags, we see that none of the lags are statistically relevant for any k levels. The t values are all small, and the p values are all large, suggesting a lack of statistical relevance. The intercepts are close to 0, and the coefficients may be statistically meaningless.
+
+Running an F test on the k=3 model, we again see that we cannot rule out the null hypothesis (L1 = L2 = L3 = 0), meaning the lags may have true coefficients of 0. This again proves that there are no biases to be found in the errors.
+
+## 6.4
+
+### a) and b)
+
+```{r 3}
+theta1 <- -2
+theta2 <-  1.35
+mu     <-  0.7
+n      <-  100
+
+rho_th <- ARMAacf(ma = c(theta1, theta2), lag.max = 10)
+round(rho_th, 3)
+
+set.seed(10000)
+
+y_sim <- as.numeric(mu + arima.sim(model = list(ma = c(theta1, theta2)), n = n))
+
+acf_y <- acf(y_sim, lag.max = 10, plot = FALSE, demean = TRUE)$acf
+acf_y
+
+```
+Comparing the theoretical lag vs the simulated lag, we see that they are very similar. ARMAacf from the base r stats package does a great job simulating the data, and then doing a 10 lag acf based on simulated numbers matches up with the early two lags. They aren't identical, but they are close enough to say that our theoretical acf is correct. After the first two lags, the theoretical acf is all 0. This isn't the case for our simulated data, but none of the lags after lag 2 are super significant (highest is 0.151 at lag 10).
+
+## 6.5
+
+### a)
+
+```{r 4}
+fit_ma2 <- arima(y_sim, order = c(0, 0, 2), include.mean = TRUE, method = "ML")
+fit_ma2
+
+ARMAacf(ma = c(-1.5006, 0.6992), lag.max = 10)[c(2, 3)]
+```
+This MA(2) model has different data generating figures than our original 6.4 formula, but the implied autocorrelations are similar, when calculated out. The function is non-invertible, but attempting to invert anyways leads to similar results.
+
+### b)
+
+```{r 5}
+mu     <- 0.7
+theta1 <- -2
+theta2 <-  1.35
+eps_t   <-  0.4
+eps_tm1 <- -1.2
+
+f1 <- mu + theta1*eps_t + theta2*eps_tm1
+f2 <- mu + theta2*eps_t
+f3 <- mu
+
+f1
+f2
+f3
+```
+
+
+## 6.6
+
+```{r 6}
+thetaA <- 0.8
+thetaB <- 1.25
+
+m <- 8
+
+op1 <- (-thetaA)^(1:m)  
+op2 <- (-thetaB)^(1:m)  
+
+round(op1, 4)
+round(op2, 4)
+```
+
+Based on the acf coefficients, we would prefer to use option 1 (op1) for forecasting because it is invertable. Its coefficients trend towards 0. Option 2, on the other hand, is not invertable and therefore does not have asymptotic behavior, making it ineffective in forecasting.
+
+
+## 6.10
+
+```{r 7d}
+apl <- read_csv("HistoricalQuotes.csv")
+head(apl)
+```
+```{r 7}
+library(dplyr)   
+apl2 <- apl |>
+  mutate(
+    Date  = as.Date(Date, format = "%m/%d/%Y"),
+    Close = as.numeric(gsub("[$,]", "", `Close/Last`))
+  ) |>
+  arrange(Date)
+
+
+r <- diff(log(apl2$Close))
+r_dates <- apl2$Date[-1]   
+
+par(mfrow = c(2,2), mar = c(4,4,3,1))
+acf(r,  lag.max = 40, main = "ACF: returns",  xlab = "Lag")
+pacf(r, lag.max = 40, main = "PACF: returns", xlab = "Lag")
+acf(r^2,  lag.max = 40, main = "ACF: squared returns",  xlab = "Lag")
+pacf(r^2, lag.max = 40, main = "PACF: squared returns", xlab = "Lag")
+par(mfrow = c(1,1))
+
+
+fit_mean <- auto.arima(r, seasonal = FALSE, stepwise = FALSE, approximation = FALSE)
+fit_mean
+
+fc_5  <- forecast(fit_mean, h = 5)
+fc_10 <- forecast(fit_mean, h = 10)
+fc_20 <- forecast(fit_mean, h = 20)
+
+fc_5
+fc_10
+fc_20
+
+autoplot(fc_20) + 
+  labs(title = "Apple log-returns: ARIMA mean model forecast (h=20)")
+
+last_price <- tail(apl2$Close, 1)
+mu_hat <- as.numeric(fc_20$mean)  
+
+logP0 <- log(last_price)
+logP_path <- logP0 + cumsum(mu_hat)
+price_path <- exp(logP_path)
+
+data.frame(
+  Date = seq(from = tail(r_dates, 1) + 1, by = "days", length.out = length(price_path)),
+  PriceForecast = price_path
+) |>
+  head(10)
+```
+For this question, I used Apple’s daily prices from March 2010 to February 2020. An ARIMA(2,0,3) with a very small non-zero mean fit the mean dynamics best (though a simpler low-order ARMA would give similar mean forecasts). The ACF of returns shows low day-to-day correlation and the PACF has no consistent spikes—returns are close to white noise. In contrast, the ACF/PACF of squared returns display clear persistence, indicating volatility clustering. Thus, volatility is predictable, but the direction (mean) of returns is not.
+
+
+# Textbook B
+
+## 6.2
+
+```{r 8}
+library(fpp2)
+data <- plastics
+```
+
+### a)
+
+```{r 9}
+y <- as.vector(t(as.matrix(data)))      
+y_ts <- ts(y, start = c(1, 1), frequency = 12)
+
+plot(y_ts, main = "Plastics: monthly sales (thousands)", ylab = "Sales", xlab = "Time")
+```
+There is a clear trend in the plastics data. Every year, the monthly sales bottom out in january before peaking in summer (june/july). 
+
+
+### b)
+
+```{r 10}
+dc <- decompose(y_ts, type = "multiplicative")
+plot(dc)
+```
+
+
+### c)
+
+Yes, this supports the time series plot in part a. There is a clear upwards trend and seasonal pattern in this data.
+
+
+### d)
+
+```{r 11}
+sa_ts <- y_ts / dc$seasonal
+
+ts.plot(cbind(SeasonallyAdjusted = sa_ts),
+        ylab = "Sales (thousands)",
+        main = "Plastics: Seasonally Adjusted Sales (multiplicative)",
+        lty = c(1, 2))
+legend("topleft", c("Seasonally adjusted"),
+       lty = c(1, 2), bty = "n")
+```
+
+Adjusting seasonally, we see that the graph is much more linear before it falls off due to a lack of 6th year data. The upwards trend is apparent and matches what we see in the main time series plot, where each year is more profitable than the last despite a clear seasonal pattern.
+
+```{r 12}
+y_1 <- y_ts
+y_1[35] <- y_1[35] + 500
+
+dc_1 <- decompose(y_1, type = "multiplicative")
+sa_1 <- y_1 / dc_1$seasonal
+
+ts.plot(cbind(Original_SA = sa_ts, Outlier_SA = sa_1),
+        lty = c(1, 2), col = c("black", "red"),
+        ylab = "Sales (thousands)",
+        main = "Seasonally Adjusted Series: Effect of a Single Outlier")
+legend("topleft", c("SA (clean)", "SA (with outlier)"),
+       lty = c(1, 2), col = c("black", "red"), bty = "n")
+
+```
+Adding in an outlier keeps most of the plot consistent, but adds in a major spike at the outlier and a lower correction 12 months away (both directions). This is what we would expect when changing one point in a seasonal trend graph. 
+
+
+### f)
+
+```{r 13}
+y_2 <- y_ts
+y_2[10] <- y_2[10] + 500
+
+dc_2 <- decompose(y_2, type = "multiplicative")
+sa_2 <- y_2 / dc_2$seasonal
+
+ts.plot(cbind(Original_SA = sa_ts, Outlier_SA = sa_2),
+        lty = c(1, 2), col = c("black", "red"),
+        ylab = "Sales (thousands)",
+        main = "Seasonally Adjusted Series: Effect of a Single Outlier")
+legend("topleft", c("SA (clean)", "SA (with outlier)"),
+       lty = c(1, 2), col = c("black", "red"), bty = "n")
+
+y_3 <- y_ts
+y_3[55] <- y_2[55] + 500
+
+dc_3 <- decompose(y_3, type = "multiplicative")
+sa_3 <- y_3 / dc_3$seasonal
+
+ts.plot(cbind(Original_SA = sa_ts, Outlier_SA = sa_3),
+        lty = c(1, 2), col = c("black", "red"),
+        ylab = "Sales (thousands)",
+        main = "Seasonally Adjusted Series: Effect of a Single Outlier")
+legend("topleft", c("SA (clean)", "SA (with outlier)"),
+       lty = c(1, 2), col = c("black", "red"), bty = "n")
+```
+When the outlier is at the beginning, we see a similar pattern to when it is in the middle. There is a large spike followed by seasonal corrections down the line
+
+When the outlier is at the end, there is no change in the graph until the spike at the outlier.
+
+
+## 6.6
+
+```{r 14}
+y <- bricksq              
+```
+
+
+### a)
+
+```{r 15}
+yl <- log(y) 
+
+stl_fixed <- stl(yl, s.window = "periodic", robust = TRUE)
+autoplot(stl_fixed) + labs(title = "STL (fixed seasonality): log bricksq")
+
+stl_chg <- stl(yl, s.window = 7, robust = TRUE)
+autoplot(stl_chg) + ggplot2::labs(title = "STL (changing seasonality): log bricksq")
+```
+Whether you hold seasonality constant or change it, the stl plots are very similar. General shapes are the same, but the stl with changing seasons seems a little smoother than fixed seasonality. The remainders are also slightly less dramatic, with most of them going towards 0 even though the large spikes remain mostly the same.
+
+
+### b) 
+
+```{r 16}
+sa_fixed_log <- seasadj(stl_fixed)
+sa_fixed     <- exp(sa_fixed_log)
+
+autoplot(sa_fixed) +
+  labs(title = "Bricks (seasonally adjusted) — fixed seasonality",
+                x = "Year", y = "Production")
+```
+### c)
+
+```{r 17}
+h <- 12
+fc_fixed <- forecast::naive(sa_fixed, h = h)
+
+autoplot(fc_fixed) +
+  labs(title = "Naïve forecasts of seasonally adjusted bricks (fixed seasonality)",
+                x = "Year", y = "Production")
+
+```
+
+### d)
+
+```{r 18}
+fc_log_fix <- stlf(yl, s.window = "periodic", method = "naive", h = h)
+
+fc_fix <- fc_log_fix
+fc_fix$mean  <- exp(fc_log_fix$mean)
+fc_fix$lower <- exp(fc_log_fix$lower)
+fc_fix$upper <- exp(fc_log_fix$upper)
+fc_fix$x     <- y  # so plotting uses original-scale history
+
+autoplot(fc_fix) +
+  labs(title = "Bricks: stlf() reseasonalised forecast (fixed seasonality)",
+                x = "Year", y = "Production")
+```
+
+### e)
+
+The errors appear to be relatively uncorrelated under the seasonalized model. There isn't a clear over/under estimation bias. In the naive forecast, the prediction is a horizontal line with a large confidence interval, but the seasonal, more advanced prediction seems to follow the same pattern as the data that preceded it.
+
+
+### f)
+
+```{r 19}
+h <- 12
+
+fc_log_rb <- stlf(yl, s.window = "periodic", method = "naive",
+                            robust = TRUE,  h = h)
+
+fc_rb <- fc_log_rb
+fc_rb$mean  <- exp(fc_log_rb$mean)
+fc_rb$lower <- exp(fc_log_rb$lower)
+fc_rb$upper <- exp(fc_log_rb$upper)
+fc_rb$x <- y
+
+
+autoplot(fc_rb) +
+  labs(title = "Bricks: stlf() forecast (ROBUST STL, periodic seasonality)",
+                x = "Year", y = "Production")
+```
+There doesn't seem to be much of a difference between the robust stl and the stlf on seasonal data. Both have a seasonal prediction pattern with a detailed, uncorrelated confidence interval
+
+
+### g)
+
+```{r 20}
+y <- bricksq                   
+h <- 8                         
+
+n <- length(y)
+train <- ts(head(y, n - h), frequency = frequency(y), start = start(y))
+test  <- ts(tail(y, h),      frequency = frequency(y),
+            start = tsp(y)[1] + (n - h)/frequency(y))
+
+fc_stlf <- stlf(train, s.window = "periodic", method = "naive",
+                lambda = 0, biasadj = TRUE, h = h)
+
+fc_snaive <- snaive(train, h = h)
+
+autoplot(fc_stlf) +
+  labs(title = "stlf (2 year data)",
+                x = "Year", y = "Production")
+
+autoplot(fc_snaive) +
+  labs(title = "snaive (2 year data)",
+                x = "Year", y = "Production")
+```
+Now that we are only predicting on 2 years of data, the two methods seem to be of the same quality. Their confidence intervals are slightly different (stlf is slightly more precise), but the middle line indicating the actual forecast value is almost the same in each graph. The STLF is better, but not by much.
+
+
+## 6.7
+
+```{r 21}
+y <- writing
+h <- 12
+lam <- BoxCox.lambda(y)
+
+fc_naive_raw <- stlf(y, s.window = "periodic", method = "naive",   h = h)
+fc_naive_bc  <- stlf(y, s.window = "periodic", method = "naive",   h = h, lambda = lam, biasadj = TRUE)
+fc_rw_raw    <- stlf(y, s.window = "periodic", method = "rwdrift", h = h)
+fc_rw_bc     <- stlf(y, s.window = "periodic", method = "rwdrift", h = h, lambda = lam, biasadj = TRUE)
+
+autoplot(fc_naive_raw) + labs(title = "writing: stlf (method = naive, no Box-Cox)", x = "Time", y = "Value")
+autoplot(fc_naive_bc) + labs(title = sprintf("writing: stlf (method = naive, Box-Cox Lambda=%.3f)", lam), x = "Time", y = "Value")
+autoplot(fc_rw_raw) + labs(title = "writing: stlf (method = rwdrift, no Box-Cox)", x = "Time", y = "Value")
+autoplot(fc_rw_bc) + labs(title = sprintf("BEST: writing: stlf (method = rwdrift, Box-Cox Lambda=%.3f)", lam), x = "Time", y = "Value")
+
+trend_needed <- ndiffs(BoxCox(y, lam)) > 0
+method_used  <- if (trend_needed) "rwdrift" else "naive"
+
+trend_needed
+method_used
+```
+These are the four possible options, but based on the ndiffs, rwdrift is a better model. It is best to leave lambda in because it helps stabalize the prediction. All four methods look similar, but a rwdrift with lambda makes for the best long term results.
+
+
+## 6.8
+
+```{r 22}
+y <- fancy
+h <- 12
+lam <- BoxCox.lambda(y)
+
+fc_naive_raw <- stlf(y, s.window = "periodic", method = "naive",   h = h)
+fc_naive_bc  <- stlf(y, s.window = "periodic", method = "naive",   h = h, lambda = lam, biasadj = TRUE)
+fc_rw_raw    <- stlf(y, s.window = "periodic", method = "rwdrift", h = h)
+fc_rw_bc     <- stlf(y, s.window = "periodic", method = "rwdrift", h = h, lambda = lam, biasadj = TRUE)
+
+autoplot(fc_naive_raw) + labs(title = "writing: stlf (method = naive, no Box-Cox)", x = "Time", y = "Value")
+autoplot(fc_naive_bc) + labs(title = sprintf("writing: stlf (method = naive, Box-Cox Lambda=%.3f)", lam), x = "Time", y = "Value")
+autoplot(fc_rw_raw) + labs(title = "writing: stlf (method = rwdrift, no Box-Cox)", x = "Time", y = "Value")
+autoplot(fc_rw_bc) + labs(title = sprintf("BEST: writing: stlf (method = rwdrift, Box-Cox Lambda=%.3f)", lam), x = "Time", y = "Value")
+
+trend_needed <- ndiffs(BoxCox(y, lam)) > 0
+method_used  <- if (trend_needed) "rwdrift" else "naive"
+
+trend_needed
+method_used
+```
+Same as in 6.7, all four models are plotted above. Again, the ndiffs() function proves that the rwdrift method is best, and the lamda adds in a smoother prediction. None of the combinations make for a super convincing model due to lack of movement before the key spike, but they all show steady improvement and match prior trends.

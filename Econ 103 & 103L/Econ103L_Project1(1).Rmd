@@ -1,0 +1,303 @@
+---
+title: "Econ 103: Project 1"
+author: "Mason Lee, Alexander Prater, Kalani Leibow, Fahad Malik"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, cache = TRUE)
+```
+
+## Packages
+
+```{r}
+#install.packages("Lahman")
+library(Lahman)
+library(tidyverse)
+library(ggplot2)
+library(car)
+
+```
+
+## Data Loading
+
+```{r}
+data(Batting)
+
+head(Batting)
+head(Fielding)
+```
+
+## Data Manipulation
+
+```{r}
+BattingData <- Batting
+
+BattingData <- BattingData %>%
+  filter(yearID >= 1985, AB >= 100, IBB > 0, HR > 0, SO > 0, RBI > 0) %>%
+  mutate(BA = H / AB, Singles = (H - X2B - X3B - HR), 
+    SLG = ((H - X2B - X3B - HR) + 2 * X2B + 3 * X3B + 4 * HR) / AB,
+         OBP = (H + BB + HBP) / (AB + BB + SF + HBP)) %>%
+  mutate(OPS = SLG + OBP) %>%
+  arrange(desc(OPS))
+
+BattingDataSlim <- BattingData[c(1, 2, 5, 12, 13, 17, 18, 25)]
+
+```
+
+## Question 1:
+
+We will use MLB StatCast data to find an OLS model to predict intentional walks for players with 100+ at-bats from 1995 to 2005. 
+
+Predictors: Strikeouts, Home Runs, Slugging Percentage, RBIs
+
+-   These variables were chosen based on their potential impact on a pitcher's decision to intentionally walk a batter.
+
+Response variable: intentional walks (IBB)
+
+Source: [Lahman Baseball Database](http://seanlahman.com/)
+
+## Graphs of 4 Predictors (Question 2)
+
+The variable that we want to predict is intentional walks. In baseball, this is when a pitcher chooses to let the batter go to first base instead of pitching to them. 
+
+The first predictor we chose was strikeouts. We chose this to evaluate if a player would be intentionally walked less if they struck out more. The other three predictors we used were home runs, slugging percentages, and runs batted in (RBIs). The reason for these choices all follow the same logic: The better a player is in any of these three categories, the more likely a pitcher is to want to intentionally walk them. 
+
+### 5 Number Summary
+
+```{r}
+fivenum(BattingDataSlim$HR)
+fivenum(BattingDataSlim$RBI)
+fivenum(BattingDataSlim$SLG)
+fivenum(BattingDataSlim$SO)
+fivenum(BattingDataSlim$IBB)
+```
+
+We restricted the data to players that have at least 1 HR, RBI, SO, and IBB because the data has to take on a discrete value greater than 0. The maximums being so high point to the existence of outliers.
+
+### Histograms
+
+```{r}
+hist(BattingDataSlim$HR, breaks = "scott")
+hist(BattingDataSlim$RBI, breaks = "scott")
+hist(BattingDataSlim$SLG, breaks = "scott")
+hist(BattingDataSlim$SO, breaks = "scott")
+hist(BattingDataSlim$IBB, breaks = "scott")
+
+```
+
+The first histogram shows the distribution of players’ home runs, using “Scott’s” rule to determine bin width. The chart displays a skewed distribution with a concentration of lower home run values, indicating that most players hit few home runs with only a few achieving higher numbers of home runs.
+
+The second histogram reveals a similarly skewed distribution, with most players having lower RBI counts. The distribution likely demonstrates that only a few players reach exceptionally high RBI values, while the majority remain within a lower range.
+
+The SLG histogram shows a relatively normal distribution indicating that most players' slugging percentages cluster around a similar range with few players on the extremes. The histogram is slightly right skewed and that is likely because the good players with higher slugging percentages play more and stay in the league longer whereas bad players who would make up a left tail are fired and stop playing.
+
+Similar to the SLG histogram, the SO histogram represents a standard normal distribution indicating that most players hover around a similar strikeout percentage. However, the right tail on this one indicates that there are many outliers of players who, on average, strike out more than others.
+
+### Boxplots
+
+```{r}
+boxplot(BattingDataSlim$HR)
+boxplot(BattingDataSlim$RBI)
+boxplot(BattingDataSlim$SLG)
+boxplot(BattingDataSlim$SO)
+boxplot(BattingDataSlim$IBB)
+
+
+```
+
+All box plots show a significant amount of outliers beyond. We believe this is because we limited the number of at bats to be over 100. What this does is it eliminates players that are cut from teams for poor performance. The best players tend to be the outliers, and they were not cut during their time.
+
+### QQ Plots
+
+```{r}
+qqplot(BattingDataSlim$HR, BattingDataSlim$IBB)
+qqplot(BattingDataSlim$RBI, BattingDataSlim$IBB)
+qqplot(BattingDataSlim$SLG, BattingDataSlim$IBB)
+qqplot(BattingDataSlim$SO, BattingDataSlim$IBB)
+```
+
+The first quantile rplot shows a positive correlation between HR and IBB indicating that players who hit more home runs receive more intentional walks. 
+
+The next quantile plot shows a moderate positive correlation between RBI and IBB suggesting that players who frequently contribute to runs are also more likely to be intentionally walked.
+
+The variable SLG stands for Slugging Percentage and represents the total bases a player earns per at-bat. 
+
+This quantile plot shows a noticeable positive relationship between SLG and IBB suggesting that players with higher slugging percentages tend to receive more intentional walks.
+
+The last quantile plot shows a weak positive correlation between strikeouts and intentional walks indicating that players who strike out more often may be intentionally walked at a higher frequency, The relationship is not quite as strong as seen in the previous variables, however, a positive correlation is certainly there.
+
+### Scatter Plots with Regression Lines (Question 3)
+
+```{r}
+
+ggplot(BattingDataSlim, aes(x = HR, y = IBB)) +
+  geom_point() + 
+  geom_jitter() 
+
+
+ggplot(BattingDataSlim, aes(x = SLG, y = IBB)) +
+  geom_point()
+
+ggplot(BattingDataSlim, aes(x = SO, y = IBB)) +
+  geom_point()
+
+ggplot(BattingDataSlim, aes(x = RBI, y = IBB)) +
+  geom_point() 
+
+
+```
+
+In the scatter plot of home runs vs. intentional walks, there is a positive trend, indicating that players with more home runs tend to receive more intentional walks. This suggests that pitchers are more likely to avoid pitching to power hitters who have demonstrated a consistent ability to hit home runs. However, the plot reveals a few outliers with exceptionally high HR and IBB values, representing elite hitters who receive disproportionately more intentional walks. Since the HR distribution is right-skewed, applying a square root or log transformation may help normalize the data, improve the linear relationship, and reduce the influence of extreme outliers.
+
+In the runs batted in vs. intentional walks scatter plot, there is a positive trend, with players who have higher RBI counts receiving more intentional walks. This relationship reflects the strategy of pitchers avoiding players who contribute significantly to scoring, as high RBI hitters often pose a risk of generating runs. However, some outliers show players with high RBI but lower IBB, indicating that these players may not be as frequently avoided due to factors such as lower home run or slugging performance. As RBI values are right-skewed, applying a square root or log transformation could normalize the data and improve the model’s accuracy by reducing the effect of extreme outliers.
+
+The scatter plot of slugging percentage vs. intentional walks shows a clear positive linear relationship, with players who achieve higher slugging percentages generally receiving more intentional walks. This trend aligns with the idea that players with higher SLG, reflecting consistent extra-base hits, are perceived as greater scoring threats by opposing pitchers. Anomalies in the plot include some players with high SLG but comparatively lower IBB counts, suggesting that these players, despite their hitting ability, are not avoided as frequently. Conversely, a few players with both high SLG and IBB reinforce the trend. As SLG shows slight right skewness, a square root transformation may enhance the normality of the data, potentially improving the stability of the linear relationship with IBB.
+
+For the strikeouts vs. intentional walks scatter plot, there is only a weak positive relationship between the two variables, indicating that strikeout frequency does not significantly predict intentional walks. This suggests that pitchers do not heavily weigh strikeout rates when deciding whether to intentionally walk a batter, as high-strikeout players may not pose a consistent scoring threat. Notable anomalies include players with high SO counts but low IBB, which suggests that despite frequent strikeouts, these players are not deemed threatening enough to warrant intentional walks. Given the skew in SO values, a square root or log transformation could help normalize the data and reduce the impact of outliers, although it may not notably affect the weak correlation with IBB.
+
+## Checking for Transformations (Question 4)
+
+```{r}
+summary(lm(BattingDataSlim$IBB ~ (BattingDataSlim$HR))) #R^2 0.2063
+summary(lm(BattingDataSlim$IBB ~ exp(BattingDataSlim$HR))) #R^2 0.005221
+summary(lm(BattingDataSlim$IBB ~ sqrt(BattingDataSlim$HR))) #R^2 0.1718
+summary(lm(BattingDataSlim$IBB ~ log(BattingDataSlim$HR))) #R^2 0.1238
+```
+
+```{r}
+summary(lm(BattingDataSlim$IBB ~ (BattingDataSlim$RBI))) #R^2 0.2305
+summary(lm(BattingDataSlim$IBB ~ exp(BattingDataSlim$RBI))) #R^2 5.118e-05 
+summary(lm(BattingDataSlim$IBB ~ sqrt(BattingDataSlim$RBI))) #R^2 0.2057
+summary(lm(BattingDataSlim$IBB ~ log(BattingDataSlim$RBI))) #R^2 0.1707
+```
+
+```{r}
+summary(lm(BattingDataSlim$IBB ~ (BattingDataSlim$SLG))) #R^2 0.1487
+summary(lm(BattingDataSlim$IBB ~ exp(BattingDataSlim$SLG))) #R^2 0.1601
+summary(lm(BattingDataSlim$IBB ~ sqrt(BattingDataSlim$SLG))) #R^2 0.1365
+summary(lm(BattingDataSlim$IBB ~ log(BattingDataSlim$SLG))) #R^2 0.1244
+```
+
+```{r}
+summary(lm(BattingDataSlim$IBB ~ (BattingDataSlim$SO))) #R^2 0.04826
+summary(lm(BattingDataSlim$IBB ~ exp(BattingDataSlim$SO))) #R^2 -8.603e-05 
+summary(lm(BattingDataSlim$IBB ~ sqrt(BattingDataSlim$SO))) #R^2 0.05132 
+summary(lm(BattingDataSlim$IBB ~ log(BattingDataSlim$SO))) #R^2 0.05137 
+```
+
+```{r}
+densityPlot(BattingDataSlim$HR) #best R^2, will use this for the Transformation
+densityPlot(sqrt(BattingDataSlim$HR)) #best visually
+densityPlot(log(BattingDataSlim$HR))
+densityPlot(exp(BattingDataSlim$HR))
+
+densityPlot(BattingDataSlim$SO) #best visually
+densityPlot(sqrt(BattingDataSlim$SO)) #best R^2, will use this for the Transformation
+densityPlot(log(BattingDataSlim$SO))
+densityPlot(exp(BattingDataSlim$SO))
+
+densityPlot(BattingDataSlim$SLG) #best visually
+densityPlot(sqrt(BattingDataSlim$SLG)) 
+densityPlot(log(BattingDataSlim$SLG))
+densityPlot(exp(BattingDataSlim$SLG)) #best R^2, will use this for the Transformation
+
+
+densityPlot(BattingDataSlim$RBI) #best visually, best R^2, will use this for the Transformation
+densityPlot(sqrt(BattingDataSlim$RBI)) 
+densityPlot(log(BattingDataSlim$RBI))
+densityPlot(exp(BattingDataSlim$RBI))
+```
+
+HR data was right-skewed, with a small number of players achieving extremely high home run counts. This skew created a concentration of data points at low values in the scatter plot, reducing the clarity of the relationship between the two variables. Although this is true, we decided not to go with a transformation as the initial yielded a higher R\^2 value.
+
+The data for RBIs was right-skewed, with a small number of observations showing high values that created a dense cluster of data points at the lower end of the scatterplot. However, the R\^2 value of RBIs without transformation allows us to make observations about their correlation with IBBs.
+
+Initially the data was highly right-skewed for strike outs, with a few extreme values causing a heavy concentration of points at the lower end of the scatterplot. This skew limited the clarity of the relationship between the predictor and IBB, as the majority of the data points were densely clustered together. Applying a square root transformation to the predictor variable helped to normalize the distribution, spreading the points more evenly across the plot and reducing the visual impact of the extreme values.
+
+Applying an exp transformation to the SLG data normalized the distribution of data and improved overall visual clarity. The initial scatterplot had many outliers and while the transformation lessened the visual impact of these outliers, they still contribute to a large right tail in the chart.
+
+## Post-Transformation Linear Models (Question 5)
+
+```{r}
+model1 <- lm(BattingDataSlim$IBB ~ (BattingDataSlim$HR))
+model2 <- lm(BattingDataSlim$IBB ~ sqrt(BattingDataSlim$SO))
+model3 <- lm(BattingDataSlim$IBB ~ exp(BattingDataSlim$SLG))
+model4 <- lm(BattingDataSlim$IBB ~ (BattingDataSlim$RBI))
+
+
+summary(model1)
+summary(model2)
+summary(model3)
+summary(model4)
+
+confint(model1)
+confint(model2)
+confint(model3)
+confint(model4)
+
+```
+
+Home runs track the number of times a player hits a home run, representing power-hitting capacity. In this model, there is a positive correlation between HR and IBB, with players who hit more home runs also receiving more intentional walks.
+
+Runs batted in reflects a player’s contribution to scoring by bringing teammates home through hits. This model shows a moderate positive correlation between RBI and IBB, suggesting that players who frequently contribute to runs are also more likely to be intentionally walked.
+
+Slugging percentage measures the total bases a player earns per at-bat, highlighting their hitting prowess. This model shows a positive linear relationship between SLG and IBB, indicating that players with higher slugging percentages are more likely to be intentionally walked.
+
+Strikeouts represent the number of times a player is struck out, showing their tendency to miss or fail to make contact. In this model, the relationship between SO and IBB is weak, indicating that strikeouts are not a strong predictor of intentional walks.
+
+## Question 6:
+
+We chose to use RBIs as our top choice model because it has the highest R² value of 0.2306. Also, the t-value for the RBI coefficient is 56.670, with a p-value much less than 0.01, indicating strong evidence against the null hypothesis. The 95% confidence interval for the RBI coefficient is (0.06780938, 0.07266839), which does not include 0. This indicates that RBIs affect the chance of being intentionally walked with statistical significance.
+
+## Bootstrapping (Question 7)
+
+```{r}
+
+model4boot <- Boot(model4, R=1000)
+
+summary(model4boot)
+confint(model4boot)
+hist(model4boot)
+
+```
+
+```{r}
+regression_model <- parsnip::linear_reg() %>%
+  parsnip::set_engine("lm") %>%
+  parsnip::set_mode("regression")
+
+fit <- regression_model %>%
+  parsnip::fit(data = BattingDataSlim, IBB ~ RBI)
+
+summary(fit$fit)
+```
+
+```{r}
+resid <- broom::augment(fit, BattingDataSlim)
+
+ggplot(data = resid, aes(x = .pred, y = .resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, color = "red")
+
+```
+
+```{r}
+qqnorm(residuals(model4))
+qqline(residuals(model4), lwd = 1)
+```
+
+The residual plot displays a random scatter around zero, with no clear patterns or signs of heteroscedasticity. A few outliers, representing elite players with high RBI counts, are present but do not significantly affect the overall model fit.
+
+The QQ-plot shows that the residuals follow a roughly normal distribution, with most points lying along the 45-degree reference line. However, slight deviations at the ends suggest the presence of outliers, which may reflect high-performing players whose data points differ significantly from the rest.
+
+The bootstrap distribution of R² values shows that the mean aligns closely with the original R² value of 0.2306. This indicates that the model explains approximately 23% of the variance in intentional walks, though other unobserved factors likely influence the decision to walk a player intentionally.
+
+The distribution of parameter estimates for RBI shows consistency across 1000 bootstrap samples. This narrow spread suggests a stable relationship between RBI and intentional walks, confirming that players with higher RBI counts are more likely to be intentionally walked.
+
+## Question 8:
+
+Our analysis of MLB data from the Lahman Baseball Database aimed to identify predictors for intentional walks among players with 100+ at-bats from 1995 to 2005. The predictors we chose to evaluate included home runs, runs batted in, slugging percentage, and strikeouts. The scatterplots indicated positive correlations between IBB and HR, RBI, and SLG, suggesting that power-hitting and scoring potential significantly influence the likelihood of a player being intentionally walked. Some transformations helped to normalize skewed data, enhancing clarity and reducing the impact of outliers in the models.
